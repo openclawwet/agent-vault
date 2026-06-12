@@ -48,7 +48,11 @@ try {
   startedUi = await startDesktopUi(config, { port: 0, open: false });
   const page = await fetch(startedUi.url);
   assert(page.ok, "desktop UI page failed");
-  assert((await page.text()).includes("Agent Vault"), "desktop UI HTML missing product name");
+  const html = await page.text();
+  assert(html.includes("Agent Vault"), "desktop UI HTML missing product name");
+  assert(html.includes("view-schema"), "desktop UI HTML missing schema view");
+  assert(html.includes("dropSurface"), "desktop UI HTML missing global drop surface");
+  assert(!html.includes("dropzone"), "desktop UI should not render the old dropzone");
 
   const addShare = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares`, {
     method: "POST",
@@ -88,4 +92,3 @@ try {
   await startedVault.close();
   await rm(tempRoot, { recursive: true, force: true });
 }
-

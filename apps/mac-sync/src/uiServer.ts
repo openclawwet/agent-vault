@@ -388,107 +388,199 @@ function renderHtml(): string {
       :root {
         color-scheme: dark;
         font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-        background: #131417;
-        color: #f4f2ee;
-        --bg: #131417;
-        --rail: rgba(35, 38, 45, 0.9);
-        --tile: rgba(37, 39, 45, 0.9);
-        --tile-deep: rgba(28, 30, 35, 0.94);
-        --line: rgba(255, 255, 255, 0.07);
-        --line-strong: rgba(255, 255, 255, 0.14);
-        --muted: rgba(244, 242, 238, 0.58);
-        --faint: rgba(244, 242, 238, 0.34);
-        --accent: #7fd7df;
-        --accent-soft: rgba(127, 215, 223, 0.12);
-        --warm: #f2b98d;
-        --warn: #f0c886;
-        --danger: #ff9f90;
-        --shadow: 0 0 0 1px rgba(255, 255, 255, 0.025),
-          -9px 9px 9px -0.5px rgba(0, 0, 0, 0.04),
-          -18px 18px 18px -1.5px rgba(0, 0, 0, 0.08),
-          -37px 37px 37px -3px rgba(0, 0, 0, 0.16),
-          -75px 75px 75px -6px rgba(0, 0, 0, 0.24),
-          -150px 150px 150px -12px rgba(0, 0, 0, 0.48);
+        background: #111110;
+        color: #eee7db;
+        --bg: #111110;
+        --panel: rgba(25, 25, 24, 0.72);
+        --panel-deep: rgba(17, 17, 16, 0.86);
+        --line: rgba(238, 231, 219, 0.075);
+        --line-strong: rgba(238, 231, 219, 0.16);
+        --text: #eee7db;
+        --muted: rgba(238, 231, 219, 0.58);
+        --faint: rgba(238, 231, 219, 0.34);
+        --ghost: rgba(238, 231, 219, 0.19);
+        --accent: #c8bca8;
+        --accent-soft: rgba(200, 188, 168, 0.1);
+        --warn: #d7bc86;
+        --ok: #b4c8a2;
+        --danger: #c38f82;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100svh;
-        background:
-          radial-gradient(circle at 72% 14%, rgba(255, 255, 255, 0.035), transparent 26%),
-          linear-gradient(135deg, #151518 0%, #191a1f 56%, #101114 100%);
+        background: var(--bg);
         overflow: hidden;
         -webkit-font-smoothing: antialiased;
       }
-      button, input { font: inherit; }
-      button { user-select: none; }
+      body.dragging::after {
+        content: "Drop to Agent Vault";
+        position: fixed;
+        left: 50%;
+        bottom: 31px;
+        z-index: 20;
+        transform: translateX(-50%);
+        color: rgba(238, 231, 219, 0.78);
+        background: rgba(21, 21, 20, 0.76);
+        border: 1px solid rgba(238, 231, 219, 0.13);
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 11px;
+        font-weight: 520;
+        backdrop-filter: blur(22px);
+        -webkit-backdrop-filter: blur(22px);
+      }
+      button,
+      input { font: inherit; }
+      button {
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      ::selection {
+        background: rgba(238, 231, 219, 0.18);
+      }
       .shell {
+        position: relative;
         min-height: 100svh;
+        padding: 21px 34px 31px 93px;
+        background: #111110;
+      }
+      .topline {
+        position: relative;
+        z-index: 5;
+        height: 34px;
         display: grid;
-        grid-template-columns: 74px minmax(0, 1fr);
-      }
-      .rail {
-        min-height: 100svh;
-        display: grid;
-        grid-template-rows: auto 1fr auto;
-        justify-items: center;
-        padding: 27px 0 22px;
-        background: linear-gradient(180deg, rgba(42, 45, 53, 0.92), rgba(31, 34, 41, 0.98));
-        border-right: 1px solid rgba(255, 255, 255, 0.055);
-      }
-      .mark {
-        width: 28px;
-        height: 28px;
-        border-radius: 50%;
-        border: 3px solid rgba(255, 255, 255, 0.82);
-        box-shadow: inset 0 0 0 4px rgba(36, 39, 46, 0.96), 0 16px 32px rgba(0, 0, 0, 0.28);
-      }
-      .rail-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 12px;
         align-items: center;
       }
-      .rail-button {
-        width: 36px;
-        height: 36px;
-        border: 0;
-        border-radius: 11px;
+      .add-button,
+      .icon-button,
+      .text-button,
+      .schema-tool {
+        border: 1px solid transparent;
+        color: rgba(238, 231, 219, 0.66);
+        background: transparent;
+        cursor: pointer;
+        transition: color 140ms ease, border-color 140ms ease, background 140ms ease, transform 140ms ease;
+      }
+      .add-button {
+        width: 29px;
+        height: 29px;
+        border-radius: 9px;
         display: grid;
         place-items: center;
-        cursor: pointer;
-        color: rgba(244, 242, 238, 0.62);
-        background: transparent;
-        transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+        color: rgba(238, 231, 219, 0.88);
+        background: rgba(238, 231, 219, 0.08);
+        border-color: rgba(238, 231, 219, 0.12);
+        font-size: 19px;
+        line-height: 1;
       }
-      .rail-button:hover {
-        color: rgba(244, 242, 238, 0.92);
-        background: rgba(255, 255, 255, 0.06);
-        transform: translateY(-1px);
+      .pathline {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: rgba(238, 231, 219, 0.61);
+        font-size: 11px;
+        font-weight: 520;
+        white-space: nowrap;
+        overflow: hidden;
       }
-      .rail-button.active {
-        color: #15161a;
-        background: rgba(255, 255, 255, 0.92);
+      .pathline strong {
+        color: rgba(238, 231, 219, 0.82);
+        font-weight: 560;
+      }
+      .pathline span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .top-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 6px;
+      }
+      .text-button {
+        min-height: 27px;
+        padding: 0 9px;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 540;
+        color: rgba(238, 231, 219, 0.55);
+      }
+      .text-button:hover,
+      .icon-button:hover,
+      .schema-tool:hover,
+      .add-button:hover {
+        color: rgba(238, 231, 219, 0.9);
+        background: rgba(238, 231, 219, 0.055);
+        border-color: rgba(238, 231, 219, 0.1);
+      }
+      .text-button.primary {
+        color: rgba(238, 231, 219, 0.84);
+        background: rgba(238, 231, 219, 0.09);
+        border-color: rgba(238, 231, 219, 0.11);
+      }
+      .nav-float {
+        position: fixed;
+        left: 25px;
+        top: 66px;
+        z-index: 8;
+        display: grid;
+        gap: 9px;
+      }
+      .icon-button {
+        width: 34px;
+        height: 34px;
+        border: 0;
+        border-radius: 10px;
+        display: grid;
+        place-items: center;
+      }
+      .icon-button.active {
+        color: rgba(238, 231, 219, 0.92);
+        background: rgba(238, 231, 219, 0.08);
       }
       .mini-icon {
         position: relative;
-        width: 17px;
-        height: 17px;
+        width: 16px;
+        height: 16px;
         display: block;
       }
       .vault-icon {
-        border-radius: 5px;
-        border: 2px solid currentColor;
+        border-radius: 4px;
+        border: 1.5px solid currentColor;
       }
       .vault-icon::after {
         content: "";
         position: absolute;
         left: 3px;
         right: 3px;
-        bottom: 3px;
-        height: 2px;
+        bottom: 4px;
+        height: 1.5px;
         background: currentColor;
         opacity: 0.72;
+      }
+      .schema-icon::before,
+      .schema-icon::after {
+        content: "";
+        position: absolute;
+        border: 1.5px solid currentColor;
+        border-radius: 4px;
+      }
+      .schema-icon::before {
+        left: 0;
+        top: 1px;
+        width: 7px;
+        height: 7px;
+      }
+      .schema-icon::after {
+        right: 0;
+        bottom: 1px;
+        width: 7px;
+        height: 7px;
       }
       .refresh-icon::before,
       .refresh-icon::after {
@@ -496,7 +588,7 @@ function renderHtml(): string {
         position: absolute;
         left: 1px;
         right: 1px;
-        height: 2px;
+        height: 1.5px;
         border-radius: 999px;
         background: currentColor;
       }
@@ -508,427 +600,532 @@ function renderHtml(): string {
         bottom: 5px;
         transform: rotate(-18deg);
       }
-      .rail-plus {
-        position: fixed;
-        left: 18px;
-        bottom: 22px;
-        width: 38px;
-        height: 38px;
-        border-radius: 11px;
-        color: #15161a;
-        background: rgba(255, 255, 255, 0.92);
-        font-size: 28px;
-        line-height: 1;
-      }
       .workspace {
+        position: relative;
+        z-index: 2;
         min-width: 0;
-        min-height: 100svh;
-        display: grid;
-        grid-template-rows: auto minmax(0, 1fr);
-        padding: 48px 54px 38px 72px;
+        height: calc(100svh - 86px);
+        margin-top: 21px;
       }
-      .topbar {
-        min-width: 0;
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 32px;
-        padding-bottom: 36px;
-      }
-      .brand { min-width: 0; }
-      h1 {
-        margin: 0;
-        font-size: 31px;
-        line-height: 1.04;
-        font-weight: 760;
-        letter-spacing: 0;
-      }
-      .device-line {
-        margin-top: 17px;
-        max-width: min(720px, 54vw);
-        color: var(--muted);
-        font-size: 12px;
-        font-weight: 560;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .subtle { color: var(--muted); }
-      .actions {
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-      }
-      .button {
-        border: 0;
-        min-height: 36px;
-        padding: 0 13px;
-        border-radius: 7px;
-        color: rgba(244, 242, 238, 0.82);
-        background: rgba(255, 255, 255, 0.055);
-        cursor: pointer;
-        transition: background 160ms ease, transform 160ms ease, color 160ms ease;
-      }
-      .button:hover {
-        color: rgba(244, 242, 238, 0.96);
-        background: rgba(255, 255, 255, 0.105);
-        transform: translateY(-1px);
-      }
-      .button.primary {
-        color: #15161a;
-        background: rgba(244, 242, 238, 0.9);
-      }
-      .button.danger {
-        color: rgba(244, 242, 238, 0.42);
-        background: transparent;
-      }
-      .button.danger:hover { color: var(--danger); }
-      .content {
+      .view {
+        height: 100%;
         min-height: 0;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 312px;
-        gap: 46px;
+        display: none;
+      }
+      .view.active {
+        display: flex;
+      }
+      .vault-view {
+        gap: clamp(26px, 4.6vw, 72px);
       }
       .stage {
+        position: relative;
+        flex: 1 1 auto;
         min-width: 0;
-        min-height: 0;
-        display: grid;
-        grid-template-rows: auto minmax(0, 1fr) auto;
-        gap: 30px;
-        overflow: hidden;
+        height: 100%;
+        padding: 42px 0 72px;
       }
-      .stage-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: baseline;
-        gap: 18px;
-      }
-      .stage-head h2,
-      .context-block h2 {
+      .micro-kicker,
+      .side-title,
+      .schema-title {
         margin: 0;
-        font-size: 13px;
+        color: rgba(238, 231, 219, 0.82);
+        font-size: 11px;
         line-height: 1;
-        font-weight: 760;
+        font-weight: 560;
         letter-spacing: 0;
       }
-      .count-line {
-        color: var(--faint);
-        font-size: 12px;
-        font-weight: 620;
-      }
-      .dropzone {
-        min-height: 174px;
-        display: grid;
-        place-items: center;
-        padding: 28px;
-        text-align: center;
-        color: rgba(244, 242, 238, 0.68);
-        background: rgba(255, 255, 255, 0.018);
-        border: 1px dashed rgba(255, 255, 255, 0.18);
-        border-radius: 5px;
-        backdrop-filter: blur(18px);
-        -webkit-backdrop-filter: blur(18px);
-        transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
-      }
-      .dropzone:hover {
-        transform: translateY(-2px);
-        border-color: rgba(244, 242, 238, 0.28);
-      }
-      .dropzone.active {
-        background: rgba(127, 215, 223, 0.08);
-        border-color: rgba(127, 215, 223, 0.68);
-      }
-      .drop-label {
-        font-size: 20px;
-        line-height: 1.18;
-        font-weight: 730;
-      }
-      .drop-note {
+      .stage-meta {
         margin-top: 9px;
         color: var(--faint);
-        font-size: 12px;
+        font-size: 11px;
+        font-weight: 480;
       }
-      .share-cloud {
-        min-height: 0;
-        overflow: auto;
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
-        gap: 28px;
-        align-content: start;
-        padding: 5px 34px 60px 0;
-      }
-      .share-cloud .share:nth-child(3n + 2) { margin-top: 26px; }
-      .share-cloud .share:nth-child(4n + 3) { margin-top: 10px; }
-      .share {
+      .source-field {
         position: relative;
-        min-height: 218px;
-        display: grid;
-        align-content: space-between;
-        gap: 18px;
-        padding: 28px 26px 22px;
+        height: calc(100% - 76px);
+        min-height: 390px;
+        margin-top: 31px;
         overflow: hidden;
-        background: linear-gradient(152deg, rgba(43, 45, 52, 0.92), rgba(30, 32, 37, 0.94));
-        border: 1px solid rgba(255, 255, 255, 0.038);
-        border-radius: 4px;
-        box-shadow: var(--shadow);
-        animation: tileIn 300ms ease both;
-        transition: transform 170ms ease, background 170ms ease, border-color 170ms ease;
       }
-      .share:hover {
-        transform: translateY(-3px);
-        background: linear-gradient(152deg, rgba(49, 51, 58, 0.95), rgba(33, 35, 40, 0.96));
-        border-color: rgba(255, 255, 255, 0.09);
+      .source-cluster {
+        position: relative;
+        height: 100%;
       }
-      .share::before {
-        content: "";
+      .source {
         position: absolute;
-        left: 0;
-        top: 26px;
-        width: 3px;
-        height: 54px;
-        background: var(--accent);
-        opacity: 0.86;
+        width: min(290px, 42vw);
+        min-height: 96px;
+        padding-left: 74px;
+        animation: sourceIn 260ms ease both;
       }
-      .share::after {
-        content: "";
-        position: absolute;
-        right: 22px;
-        top: 25px;
-        width: 68px;
-        height: 51px;
-        border-radius: 7px;
-        background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0 7px, rgba(255, 255, 255, 0) 7px),
-          linear-gradient(132deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.035));
-        border: 1px solid rgba(255, 255, 255, 0.075);
-        filter: drop-shadow(-18px 24px 28px rgba(0, 0, 0, 0.34));
-        opacity: 0.6;
-        pointer-events: none;
-      }
-      @keyframes tileIn {
-        from { opacity: 0; transform: translateY(10px); }
+      .source:nth-child(6n + 1) { left: 2%; top: 4%; }
+      .source:nth-child(6n + 2) { left: 36%; top: 16%; }
+      .source:nth-child(6n + 3) { left: 16%; top: 42%; }
+      .source:nth-child(6n + 4) { left: 58%; top: 47%; }
+      .source:nth-child(6n + 5) { left: 4%; top: 70%; }
+      .source:nth-child(6n + 6) { left: 44%; top: 74%; }
+      @keyframes sourceIn {
+        from { opacity: 0; transform: translateY(8px); }
         to { opacity: 1; transform: translateY(0); }
       }
-      .share-top,
-      .row {
+      .folder-mark {
+        position: absolute;
+        left: 0;
+        top: 2px;
+        width: 52px;
+        height: 38px;
+        border-radius: 6px;
+        border: 1px solid rgba(238, 231, 219, 0.14);
+        background: rgba(238, 231, 219, 0.04);
+        box-shadow: 0 22px 50px rgba(0, 0, 0, 0.22);
+      }
+      .folder-mark::before {
+        content: "";
+        position: absolute;
+        left: 6px;
+        top: -7px;
+        width: 22px;
+        height: 9px;
+        border: 1px solid rgba(238, 231, 219, 0.12);
+        border-bottom: 0;
+        border-radius: 5px 5px 0 0;
+        background: rgba(238, 231, 219, 0.045);
+      }
+      .source-title {
+        max-width: 210px;
+        color: rgba(238, 231, 219, 0.9);
+        font-size: 20px;
+        line-height: 1.13;
+        font-weight: 580;
+        overflow-wrap: anywhere;
+      }
+      .source-path {
+        margin-top: 7px;
+        max-width: 240px;
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .source-line {
+        margin-top: 14px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: center;
+        color: rgba(238, 231, 219, 0.45);
+        font-size: 11px;
+      }
+      .source-action {
+        border: 0;
+        padding: 0;
+        color: rgba(238, 231, 219, 0.44);
+        background: transparent;
+        cursor: pointer;
+        font-size: 11px;
+        font-weight: 520;
+      }
+      .source-action:hover {
+        color: rgba(238, 231, 219, 0.82);
+      }
+      .source-action.danger:hover {
+        color: var(--danger);
+      }
+      .source.empty {
+        left: 12%;
+        top: 23%;
+        width: min(420px, 70vw);
+        padding-left: 0;
+        color: rgba(238, 231, 219, 0.42);
+        font-size: 14px;
+        line-height: 1.45;
+      }
+      .paste-path {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        width: min(540px, 88%);
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 10px;
-        align-items: start;
-      }
-      .share-top {
-        display: block;
-      }
-      .label {
-        font-weight: 740;
-        overflow-wrap: anywhere;
-      }
-      .share .label {
-        max-width: calc(100% - 78px);
-        font-size: 19px;
-        line-height: 1.23;
-      }
-      .path {
-        margin-top: 9px;
-        color: var(--faint);
-        font-size: 11px;
-        line-height: 1.45;
-        overflow-wrap: anywhere;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-      .chip {
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        background: rgba(255, 255, 255, 0.035);
-        color: rgba(244, 242, 238, 0.55);
-        padding: 5px 8px;
-        border-radius: 5px;
-        font-size: 11px;
-        font-weight: 650;
-      }
-      .chip.good { color: #9ee6b4; border-color: rgba(158, 230, 180, 0.18); }
-      .chip.warn { color: var(--warn); border-color: rgba(255, 208, 138, 0.18); }
-      .share-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
         align-items: center;
       }
-      .manual-add {
-        width: min(620px, 100%);
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 9px;
-      }
       input {
+        height: 28px;
         min-width: 0;
-        height: 39px;
-        color: rgba(244, 242, 238, 0.84);
-        background: rgba(255, 255, 255, 0.046);
-        border: 1px solid rgba(255, 255, 255, 0.055);
-        border-radius: 7px;
-        padding: 0 12px;
+        color: rgba(238, 231, 219, 0.76);
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid rgba(238, 231, 219, 0.11);
+        border-radius: 0;
+        padding: 0 2px;
         outline: none;
+        font-size: 11px;
       }
-      input:focus { border-color: rgba(127, 215, 223, 0.55); }
-      .context {
-        min-width: 0;
+      input::placeholder {
+        color: rgba(238, 231, 219, 0.3);
+      }
+      input:focus {
+        border-bottom-color: rgba(238, 231, 219, 0.25);
+      }
+      .quiet-submit {
+        border: 0;
+        padding: 0 2px;
+        color: rgba(238, 231, 219, 0.47);
+        background: transparent;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .quiet-submit:hover {
+        color: rgba(238, 231, 219, 0.84);
+      }
+      .side {
+        flex: 0 0 330px;
         min-height: 0;
         display: grid;
-        grid-template-rows: minmax(0, 0.92fr) minmax(190px, 0.76fr);
-        gap: 33px;
+        grid-template-rows: minmax(0, 0.96fr) minmax(0, 0.86fr);
+        gap: 34px;
+        padding: 42px 0 25px;
       }
-      .context-block {
+      .side-section {
         min-height: 0;
         display: grid;
         grid-template-rows: auto minmax(0, 1fr);
-        gap: 18px;
+        gap: 17px;
+        overflow: hidden;
       }
-      .context-head {
+      .side-head {
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: 12px;
       }
-      .context-body {
+      .side-body {
         min-height: 0;
         overflow: auto;
-        display: grid;
-        gap: 16px;
-        align-content: start;
+        padding-right: 5px;
       }
-      .space {
-        display: grid;
-        gap: 10px;
-        padding-bottom: 18px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-      }
-      .space:last-child { border-bottom: 0; }
-      .folder,
-      .change,
+      .space,
       .activity {
+        padding: 0 0 18px;
+      }
+      .space + .space,
+      .activity + .activity {
+        border-top: 1px solid var(--line);
+        padding-top: 18px;
+      }
+      .space-title {
+        color: rgba(238, 231, 219, 0.84);
+        font-size: 16px;
+        line-height: 1.15;
+        font-weight: 560;
+      }
+      .subtle {
+        color: var(--faint);
+        font-size: 11px;
+      }
+      .folder,
+      .change {
         display: grid;
-        grid-template-columns: 1fr auto;
-        gap: 8px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
         align-items: baseline;
-        padding: 4px 0;
+        padding-top: 10px;
       }
       .mono {
+        min-width: 0;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 11px;
-        color: rgba(244, 242, 238, 0.54);
+        font-size: 10.5px;
+        color: rgba(238, 231, 219, 0.48);
         overflow-wrap: anywhere;
       }
       .metric {
-        color: rgba(244, 242, 238, 0.42);
-        font-size: 11px;
+        color: var(--faint);
+        font-size: 10.5px;
         white-space: nowrap;
       }
-      .empty {
-        color: rgba(244, 242, 238, 0.42);
-        font-size: 13px;
-        padding: 16px 0;
+      .activity-message {
+        color: rgba(238, 231, 219, 0.64);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .activity-meta {
+        margin-top: 5px;
+        color: var(--faint);
+        font-size: 10.5px;
+      }
+      .empty-note {
+        color: var(--faint);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .status-pill {
+        color: rgba(238, 231, 219, 0.4);
+        font-size: 10.5px;
+        border: 1px solid rgba(238, 231, 219, 0.09);
+        border-radius: 999px;
+        padding: 3px 7px;
+      }
+      .schema-view {
+        flex-direction: column;
+        gap: 17px;
+        padding-top: 31px;
+      }
+      .schema-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+      }
+      .schema-help {
+        color: var(--faint);
+        font-size: 11px;
+      }
+      .schema-tools {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+      }
+      .schema-tool {
+        height: 26px;
+        min-width: 26px;
+        border-radius: 8px;
+        padding: 0 8px;
+        font-size: 11px;
+      }
+      .schema-viewport {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        cursor: grab;
+        border: 1px solid rgba(238, 231, 219, 0.055);
+        border-radius: 13px;
+        background-color: rgba(14, 14, 13, 0.38);
+        background-image:
+          linear-gradient(rgba(238, 231, 219, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(238, 231, 219, 0.035) 1px, transparent 1px);
+        background-size: 44px 44px;
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+      }
+      .schema-viewport:active {
+        cursor: grabbing;
+      }
+      .schema-world {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 980px;
+        height: 610px;
+        transform-origin: 0 0;
+      }
+      .schema-lines {
+        position: absolute;
+        inset: 0;
+        width: 980px;
+        height: 610px;
+        pointer-events: none;
+      }
+      .schema-line {
+        stroke: rgba(238, 231, 219, 0.18);
+        stroke-width: 1;
+        fill: none;
+      }
+      .schema-node {
+        position: absolute;
+        width: 188px;
+        min-height: 86px;
+        padding: 13px 14px 12px;
+        border: 1px solid rgba(238, 231, 219, 0.12);
+        border-radius: 10px;
+        background: rgba(20, 20, 19, 0.82);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+      }
+      .schema-node.source-node {
+        border-color: rgba(200, 188, 168, 0.18);
+      }
+      .node-kind {
+        color: rgba(238, 231, 219, 0.36);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+      .node-title {
+        margin-top: 8px;
+        color: rgba(238, 231, 219, 0.86);
+        font-size: 14px;
+        line-height: 1.2;
+        font-weight: 560;
+        overflow-wrap: anywhere;
+      }
+      .node-meta {
+        margin-top: 7px;
+        color: var(--faint);
+        font-size: 10.5px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
       }
       .toast {
         position: fixed;
-        right: 24px;
-        bottom: 22px;
-        max-width: min(420px, calc(100vw - 32px));
-        background: rgba(28, 30, 35, 0.92);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 7px;
-        padding: 12px 15px;
-        color: rgba(244, 242, 238, 0.9);
-        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
+        right: 25px;
+        bottom: 24px;
+        z-index: 30;
+        max-width: min(390px, calc(100vw - 50px));
+        color: rgba(238, 231, 219, 0.84);
+        background: rgba(19, 19, 18, 0.82);
+        border: 1px solid rgba(238, 231, 219, 0.12);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 11px;
+        backdrop-filter: blur(22px);
+        -webkit-backdrop-filter: blur(22px);
         opacity: 0;
-        transform: translateY(8px);
-        transition: opacity 180ms ease, transform 180ms ease;
+        transform: translateY(6px);
+        transition: opacity 160ms ease, transform 160ms ease;
       }
-      .toast.show { opacity: 1; transform: translateY(0); }
-      @media (max-width: 1100px) {
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .hidden {
+        display: none !important;
+      }
+      @media (max-width: 1080px) {
         body { overflow: auto; }
-        .workspace { min-height: 100svh; padding: 36px 30px 30px; }
-        .content { grid-template-columns: 1fr; }
-        .context { grid-template-columns: 1fr; grid-template-rows: auto; }
+        .shell {
+          min-height: 100svh;
+          padding: 18px 24px 28px 78px;
+        }
+        .workspace {
+          height: auto;
+          min-height: calc(100svh - 78px);
+        }
+        .vault-view {
+          flex-direction: column;
+        }
+        .side {
+          flex-basis: auto;
+          grid-template-columns: 1fr 1fr;
+          grid-template-rows: minmax(260px, auto);
+        }
+        .source-field {
+          min-height: 520px;
+        }
+        .source {
+          width: min(290px, 72vw);
+        }
       }
-      @media (max-width: 740px) {
-        .shell { grid-template-columns: 56px 1fr; }
-        .rail { padding-top: 20px; }
-        .rail-plus { left: 9px; }
-        .topbar { flex-direction: column; }
-        .actions,
-        .manual-add { width: 100%; }
-        .manual-add { grid-template-columns: 1fr; }
-        .button { width: 100%; }
-        .share-cloud { grid-template-columns: 1fr; padding-right: 0; }
-        .share-cloud .share { margin-top: 0 !important; }
+      @media (max-width: 760px) {
+        .shell {
+          padding: 16px 16px 24px 62px;
+        }
+        .nav-float {
+          left: 15px;
+        }
+        .top-actions {
+          display: none;
+        }
+        .side {
+          grid-template-columns: 1fr;
+        }
+        .source:nth-child(n) {
+          position: relative;
+          left: auto;
+          top: auto;
+          margin: 0 0 34px;
+        }
+        .source-field {
+          height: auto;
+          min-height: 0;
+          overflow: visible;
+        }
+        .schema-head {
+          align-items: flex-start;
+          flex-direction: column;
+        }
       }
     </style>
   </head>
   <body>
     <main class="shell">
-      <nav class="rail" aria-label="Agent Vault">
-        <div class="mark" aria-hidden="true"></div>
-        <div class="rail-stack">
-          <button class="rail-button active" title="Vault" aria-label="Vault"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
-          <button class="rail-button" id="refresh" title="Refresh" aria-label="Refresh"><span class="mini-icon refresh-icon" aria-hidden="true"></span></button>
+      <header class="topline">
+        <button class="add-button" id="chooseFolder" title="Add shared folder" aria-label="Add shared folder">+</button>
+        <div class="pathline">
+          <strong>Agent Vault</strong>
+          <span>/</span>
+          <span id="connection">loading</span>
         </div>
-        <button class="rail-button rail-plus" id="chooseFolder" title="Add shared folder" aria-label="Add shared folder">+</button>
+        <div class="top-actions">
+          <button class="text-button" id="openFolder">open</button>
+          <button class="text-button primary" id="syncAll">sync</button>
+        </div>
+      </header>
+      <nav class="nav-float" aria-label="Agent Vault views">
+        <button class="icon-button active" data-view="vault" title="Vault" aria-label="Vault"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
+        <button class="icon-button" data-view="schema" title="Schema" aria-label="Schema"><span class="mini-icon schema-icon" aria-hidden="true"></span></button>
+        <button class="icon-button" id="refresh" title="Refresh" aria-label="Refresh"><span class="mini-icon refresh-icon" aria-hidden="true"></span></button>
       </nav>
-      <section class="workspace">
-        <header class="topbar">
-          <div class="brand">
-            <h1>Agent Vault</h1>
-            <div class="device-line" id="connection">Loading</div>
-          </div>
-          <div class="actions">
-            <button class="button" id="openFolder">Open</button>
-            <button class="button primary" id="syncAll">Sync</button>
-          </div>
-        </header>
-        <div class="content">
+      <section class="workspace" aria-live="polite">
+        <section class="view vault-view active" id="view-vault">
           <section class="stage">
-            <div class="stage-head">
-              <h2>Shared folders</h2>
-              <div class="count-line" id="shareCount">0 sources</div>
+            <p class="micro-kicker">shared sources</p>
+            <div class="stage-meta" id="shareCount">0 sources</div>
+            <div class="source-field" id="dropSurface">
+              <div class="source-cluster" id="shares"></div>
             </div>
-            <div class="dropzone" id="dropzone">
-              <div>
-                <div class="drop-label">Drop files or folders</div>
-                <div class="drop-note">Quick drops land in Desktop Drops.</div>
-              </div>
-            </div>
-            <div class="share-cloud" id="shares"></div>
-            <div class="manual-add">
-              <input id="pathInput" placeholder="Paste a folder path" />
-              <button class="button" id="addPath">Add</button>
-            </div>
+            <form class="paste-path" id="pathForm">
+              <input id="pathInput" placeholder="paste a local folder path" />
+              <button class="quiet-submit" type="submit">add</button>
+            </form>
           </section>
-          <aside class="context">
-            <section class="context-block">
-              <div class="context-head">
-                <h2>Vault</h2>
-                <span class="chip" id="pending">0 pending</span>
+          <aside class="side">
+            <section class="side-section">
+              <div class="side-head">
+                <h2 class="side-title">vault</h2>
+                <span class="status-pill" id="pending">0 pending</span>
               </div>
-              <div class="context-body" id="structure"></div>
+              <div class="side-body" id="structure"></div>
             </section>
-            <section class="context-block">
-              <div class="context-head">
-                <h2>Log</h2>
+            <section class="side-section">
+              <div class="side-head">
+                <h2 class="side-title">log</h2>
               </div>
-              <div class="context-body" id="activity"></div>
+              <div class="side-body" id="activity"></div>
             </section>
           </aside>
-        </div>
+        </section>
+        <section class="view schema-view" id="view-schema">
+          <header class="schema-head">
+            <div>
+              <h2 class="schema-title">schema</h2>
+              <div class="schema-help">drag the field, scroll to zoom</div>
+            </div>
+            <div class="schema-tools">
+              <button class="schema-tool" id="zoomOut">-</button>
+              <button class="schema-tool" id="zoomReset">100%</button>
+              <button class="schema-tool" id="zoomIn">+</button>
+            </div>
+          </header>
+          <div class="schema-viewport" id="schemaViewport">
+            <div class="schema-world" id="schemaWorld">
+              <svg class="schema-lines" id="schemaLines" viewBox="0 0 980 610" aria-hidden="true"></svg>
+              <div id="schemaNodes"></div>
+            </div>
+          </div>
+        </section>
       </section>
     </main>
     <div class="toast" id="toast"></div>
     <script>
-      const state = { summary: null };
+      const state = {
+        summary: null,
+        view: "vault",
+        schema: { scale: 1, x: 80, y: 48, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 },
+        dragDepth: 0
+      };
       const $ = (id) => document.getElementById(id);
       const toast = (message) => {
         const node = $("toast");
@@ -960,10 +1157,21 @@ function renderHtml(): string {
       };
       const fmtTime = (value) => new Date(value).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
       async function refresh() {
         state.summary = await api("/api/summary");
         render();
       }
+
+      function setView(view) {
+        state.view = view;
+        document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+        $("view-vault").classList.toggle("active", view === "vault");
+        $("view-schema").classList.toggle("active", view === "schema");
+        if (view === "schema") renderSchema();
+      }
+
       function render() {
         const summary = state.summary;
         let host = summary.serverUrl;
@@ -972,24 +1180,21 @@ function renderHtml(): string {
         $("pending").textContent = summary.mainPendingActions + " pending";
         $("shareCount").textContent = summary.shares.length + (summary.shares.length === 1 ? " source" : " sources");
         $("shares").innerHTML = summary.shares.length ? summary.shares.map((share) =>
-          '<article class="share">' +
-            '<div class="share-top">' +
-              '<div>' +
-                '<div class="label">' + esc(share.label) + '</div>' +
-                '<div class="path" title="' + esc(share.localDir) + '">' + esc(shortPath(share.localDir)) + '</div>' +
-              '</div>' +
-            '</div>' +
-            '<div class="chips">' +
-              '<span class="chip ' + (share.available ? "good" : "warn") + '">' + (share.available ? fileLabel(share.localFileCount) : "offline") + '</span>' +
-              '<span class="chip ' + (share.pendingActions ? "warn" : "good") + '">' + share.pendingActions + ' pending</span>' +
-            '</div>' +
-            '<div class="share-actions">' +
-              '<button class="button" data-open="' + esc(share.localDir) + '">Open</button>' +
-              '<button class="button primary" data-sync="' + esc(share.id) + '">Sync</button>' +
-              '<button class="button danger" data-remove="' + esc(share.id) + '">Remove</button>' +
+          '<article class="source">' +
+            '<span class="folder-mark" aria-hidden="true"></span>' +
+            '<div class="source-title">' + esc(share.label) + '</div>' +
+            '<div class="source-path" title="' + esc(share.localDir) + '">' + esc(shortPath(share.localDir)) + '</div>' +
+            '<div class="source-line">' +
+              '<span>' + (share.available ? fileLabel(share.localFileCount) : "offline") + '</span>' +
+              '<span>/</span>' +
+              '<span>' + share.pendingActions + ' pending</span>' +
+              '<span>/</span>' +
+              '<button class="source-action" data-open="' + esc(share.localDir) + '">open</button>' +
+              '<button class="source-action" data-sync="' + esc(share.id) + '">sync</button>' +
+              '<button class="source-action danger" data-remove="' + esc(share.id) + '">remove</button>' +
             '</div>' +
           '</article>'
-        ).join("") : '<div class="empty">Press + or drop something here.</div>';
+        ).join("") : '<div class="source empty">Press + to add a folder. Drop files or folders anywhere in this window for quick uploads.</div>';
         const visibleSpaces = summary.remoteSpaces.filter((space) => space.fileCount > 0 || space.name === summary.defaultSpace).slice(0, 4);
         $("structure").innerHTML = visibleSpaces.length ? visibleSpaces.map((space) => {
           const folders = (space.folders.length ? space.folders : [{ path: "/", count: 0, size: 0 }]).slice(0, 4).map((folder) =>
@@ -1005,26 +1210,63 @@ function renderHtml(): string {
             '</div>'
           ).join("");
           return '<div class="space">' +
-            '<div class="row">' +
-              '<div>' +
-                '<div class="label">' + esc(space.name) + '</div>' +
-                '<div class="subtle">' + fileLabel(space.fileCount) + ' / ' + fmtSize(space.size) + '</div>' +
-              '</div>' +
-            '</div>' +
+            '<div class="space-title">' + esc(space.name) + '</div>' +
+            '<div class="subtle">' + fileLabel(space.fileCount) + ' / ' + fmtSize(space.size) + '</div>' +
             folders +
             changes +
           '</div>';
-        }).join("") : '<div class="empty">No vault files yet.</div>';
+        }).join("") : '<div class="empty-note">No vault files yet.</div>';
         $("activity").innerHTML = summary.activity.length ? summary.activity.slice(0, 12).map((entry) =>
           '<div class="activity">' +
-            '<span>' +
-              '<div>' + esc(entry.message) + '</div>' +
-              '<div class="subtle">' + esc(entry.kind) + '</div>' +
-            '</span>' +
-            '<span class="metric">' + fmtTime(entry.timestamp) + '</span>' +
+            '<div class="activity-message">' + esc(entry.message) + '</div>' +
+            '<div class="activity-meta">' + esc(entry.kind) + ' / ' + fmtTime(entry.timestamp) + '</div>' +
           '</div>'
-        ).join("") : '<div class="empty">No activity yet.</div>';
+        ).join("") : '<div class="empty-note">No activity yet.</div>';
+        renderSchema();
       }
+
+      function schemaNode(id, kind, title, meta, x, y, extra = "") {
+        return '<div class="schema-node ' + extra + '" id="' + esc(id) + '" style="left:' + x + 'px;top:' + y + 'px">' +
+          '<div class="node-kind">' + esc(kind) + '</div>' +
+          '<div class="node-title">' + esc(title) + '</div>' +
+          '<div class="node-meta">' + esc(meta) + '</div>' +
+        '</div>';
+      }
+
+      function renderSchema() {
+        if (!state.summary) return;
+        const summary = state.summary;
+        const defaultSpace = summary.remoteSpaces.find((space) => space.name === summary.defaultSpace) || summary.remoteSpaces[0];
+        const shares = summary.shares.slice(0, 5);
+        const nodeHtml = [];
+        const lines = [];
+        nodeHtml.push(schemaNode("node-device", "device", "MacBook", summary.syncFolder, 76, 230));
+        nodeHtml.push(schemaNode("node-space", "vault space", summary.defaultSpace, defaultSpace ? fileLabel(defaultSpace.fileCount) + " / " + fmtSize(defaultSpace.size) : "0 files", 414, 230));
+        nodeHtml.push(schemaNode("node-drops", "quick drop", "Desktop Drops", "window-wide drop target", 718, 92));
+        nodeHtml.push(schemaNode("node-log", "audit", "Activity Log", summary.activity.length + " entries", 718, 374));
+        lines.push('<path class="schema-line" d="M264 273 C330 273 342 273 414 273" />');
+        lines.push('<path class="schema-line" d="M602 252 C650 202 674 150 718 135" />');
+        lines.push('<path class="schema-line" d="M602 294 C662 324 672 382 718 418" />');
+        shares.forEach((share, index) => {
+          const x = index % 2 === 0 ? 74 : 190;
+          const y = 38 + index * 90;
+          const id = "node-share-" + index;
+          nodeHtml.push(schemaNode(id, "source", share.label, shortPath(share.localDir), x, y, "source-node"));
+          const startX = x + 188;
+          const startY = y + 43;
+          lines.push('<path class="schema-line" d="M' + startX + ' ' + startY + ' C330 ' + startY + ' 350 273 414 273" />');
+        });
+        $("schemaLines").innerHTML = lines.join("");
+        $("schemaNodes").innerHTML = nodeHtml.join("");
+        updateSchemaTransform();
+      }
+
+      function updateSchemaTransform() {
+        const value = "translate(" + state.schema.x + "px, " + state.schema.y + "px) scale(" + state.schema.scale + ")";
+        $("schemaWorld").style.transform = value;
+        $("zoomReset").textContent = Math.round(state.schema.scale * 100) + "%";
+      }
+
       async function addPath(path) {
         await api("/api/shares", {
           method: "POST",
@@ -1051,6 +1293,31 @@ function renderHtml(): string {
         const nested = await Promise.all(batch.map((item) => walkEntry(item, prefix + entry.name + "/")));
         return nested.flat();
       }
+      async function handleDrop(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        state.dragDepth = 0;
+        document.body.classList.remove("dragging");
+        if (!state.summary) await refresh();
+        const items = [...(event.dataTransfer?.items || [])];
+        let files = [];
+        for (const item of items) {
+          const entry = item.webkitGetAsEntry?.();
+          if (entry) files.push(...await walkEntry(entry));
+          else {
+            const file = item.getAsFile?.();
+            if (file) files.push({ file, path: file.name });
+          }
+        }
+        if (!files.length) return;
+        toast("Uploading " + files.length + " files");
+        for (const item of files) {
+          await uploadFile(item.file, item.path);
+        }
+        await refresh();
+        toast("Drop upload complete");
+      }
+
       $("syncAll").addEventListener("click", async () => {
         toast("Sync running");
         await api("/api/sync", { method: "POST" });
@@ -1059,18 +1326,26 @@ function renderHtml(): string {
       });
       $("refresh").addEventListener("click", refresh);
       $("openFolder").addEventListener("click", () => api("/api/open-main-folder", { method: "POST" }));
-      $("addPath").addEventListener("click", async () => {
+      $("pathForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
         const value = $("pathInput").value.trim();
-        if (value) await addPath(value);
+        if (value) {
+          await addPath(value);
+          $("pathInput").value = "";
+        }
       });
       $("chooseFolder").addEventListener("click", async () => {
         const choice = await api("/api/choose-folder");
         if (choice.path) await addPath(choice.path);
       });
+      document.querySelectorAll("[data-view]").forEach((button) => {
+        button.addEventListener("click", () => setView(button.dataset.view));
+      });
       document.addEventListener("click", async (event) => {
-        const removeId = event.target?.dataset?.remove;
-        const syncId = event.target?.dataset?.sync;
-        const openFolder = event.target?.dataset?.open;
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        const removeId = target?.dataset?.remove;
+        const syncId = target?.dataset?.sync;
+        const openFolder = target?.dataset?.open;
         if (removeId) {
           await api("/api/shares/" + encodeURIComponent(removeId), { method: "DELETE" });
           await refresh();
@@ -1089,32 +1364,66 @@ function renderHtml(): string {
           });
         }
       });
-      const dropzone = $("dropzone");
-      ["dragenter", "dragover"].forEach((name) => dropzone.addEventListener(name, (event) => {
+
+      document.addEventListener("dragenter", (event) => {
         event.preventDefault();
-        dropzone.classList.add("active");
-      }));
-      ["dragleave", "drop"].forEach((name) => dropzone.addEventListener(name, () => dropzone.classList.remove("active")));
-      dropzone.addEventListener("drop", async (event) => {
-        event.preventDefault();
-        const items = [...event.dataTransfer.items];
-        let files = [];
-        for (const item of items) {
-          const entry = item.webkitGetAsEntry?.();
-          if (entry) files.push(...await walkEntry(entry));
-          else {
-            const file = item.getAsFile?.();
-            if (file) files.push({ file, path: file.name });
-          }
-        }
-        if (!files.length) return;
-        toast("Uploading " + files.length + " files");
-        for (const item of files) {
-          await uploadFile(item.file, item.path);
-        }
-        await refresh();
-        toast("Drop upload complete");
+        state.dragDepth += 1;
+        document.body.classList.add("dragging");
       });
+      document.addEventListener("dragover", (event) => {
+        event.preventDefault();
+      });
+      document.addEventListener("dragleave", () => {
+        state.dragDepth = Math.max(0, state.dragDepth - 1);
+        if (state.dragDepth === 0) document.body.classList.remove("dragging");
+      });
+      document.addEventListener("drop", handleDrop);
+
+      $("zoomIn").addEventListener("click", () => {
+        state.schema.scale = clamp(state.schema.scale + 0.12, 0.45, 1.8);
+        updateSchemaTransform();
+      });
+      $("zoomOut").addEventListener("click", () => {
+        state.schema.scale = clamp(state.schema.scale - 0.12, 0.45, 1.8);
+        updateSchemaTransform();
+      });
+      $("zoomReset").addEventListener("click", () => {
+        state.schema = { ...state.schema, scale: 1, x: 80, y: 48 };
+        updateSchemaTransform();
+      });
+      $("schemaViewport").addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const previous = state.schema.scale;
+        const next = clamp(previous + (event.deltaY > 0 ? -0.08 : 0.08), 0.45, 1.8);
+        const rect = $("schemaViewport").getBoundingClientRect();
+        const pointerX = event.clientX - rect.left;
+        const pointerY = event.clientY - rect.top;
+        state.schema.x = pointerX - ((pointerX - state.schema.x) / previous) * next;
+        state.schema.y = pointerY - ((pointerY - state.schema.y) / previous) * next;
+        state.schema.scale = next;
+        updateSchemaTransform();
+      }, { passive: false });
+      $("schemaViewport").addEventListener("pointerdown", (event) => {
+        state.schema.dragging = true;
+        state.schema.startX = event.clientX;
+        state.schema.startY = event.clientY;
+        state.schema.originX = state.schema.x;
+        state.schema.originY = state.schema.y;
+        $("schemaViewport").setPointerCapture(event.pointerId);
+      });
+      $("schemaViewport").addEventListener("pointermove", (event) => {
+        if (!state.schema.dragging) return;
+        state.schema.x = state.schema.originX + event.clientX - state.schema.startX;
+        state.schema.y = state.schema.originY + event.clientY - state.schema.startY;
+        updateSchemaTransform();
+      });
+      $("schemaViewport").addEventListener("pointerup", () => {
+        state.schema.dragging = false;
+      });
+      $("schemaViewport").addEventListener("pointercancel", () => {
+        state.schema.dragging = false;
+      });
+
       refresh().catch((error) => toast(error.message));
     </script>
   </body>

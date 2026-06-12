@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = NSColor(red: 0.075, green: 0.078, blue: 0.09, alpha: 1.0)
+        window.backgroundColor = NSColor(red: 0.067, green: 0.067, blue: 0.063, alpha: 1.0)
         window.minSize = NSSize(width: 920, height: 620)
         window.contentView = webView
         window.delegate = self
@@ -169,11 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
-              :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: #17181d; color: #f3f4f7; }
-              body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #15161a, #1a1b20 58%, #101114); }
-              main { width: min(420px, calc(100vw - 72px)); text-align: left; padding: 0; background: transparent; }
-              h1 { margin: 0 0 14px; font-size: 30px; line-height: 1.05; letter-spacing: 0; }
-              p { margin: 0; color: rgba(243,244,247,.62); line-height: 1.45; overflow-wrap: anywhere; }
+              :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; background: #111110; color: #eee7db; }
+              body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111110; }
+              main { width: min(390px, calc(100vw - 72px)); text-align: left; padding: 0; background: transparent; }
+              h1 { margin: 0 0 11px; font-size: 20px; line-height: 1.1; font-weight: 560; letter-spacing: 0; }
+              p { margin: 0; color: rgba(238,231,219,.52); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
             </style>
           </head>
           <body><main><h1>Agent Vault</h1><p>\(escaped)</p></main></body>
