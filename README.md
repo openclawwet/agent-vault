@@ -10,7 +10,9 @@ The first slice is a local tracer. It proves that a file can be uploaded through
 pnpm install
 pnpm build
 pnpm smoke:local
+pnpm smoke:mac-sync
 pnpm smoke:web
+pnpm smoke:three-device
 ```
 
 Start the server:
@@ -110,3 +112,21 @@ AGENT_VAULT_TOKEN=optional-local-token
 ```
 
 V1 has no public links and no cloud storage dependency.
+
+## Backup, restore and launch
+
+Runbook: [docs/LAUNCH_RUNBOOK.md](docs/LAUNCH_RUNBOOK.md).
+
+Create a local backup:
+
+```bash
+pnpm backup --label manual
+```
+
+Inspect a restore before writing:
+
+```bash
+pnpm restore --backup ~/.agent-vault/backups/<backup-dir> --dry-run
+```
+
+The backup includes the storage root, a SQLite snapshot, and a non-secret manifest. It does not include `dev-token` or plaintext device tokens. A LaunchAgent plist template is prepared under `docs/launchd/`, but loading or restarting it is a manual step.

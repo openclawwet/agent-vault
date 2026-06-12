@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.nilsthomsen.agent-vault</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/pnpm</string>
+    <string>--dir</string>
+    <string>/Users/nilsmacmini/agent-vault</string>
+    <string>dev:server</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENT_VAULT_HOST</key>
+    <string>127.0.0.1</string>
+    <key>AGENT_VAULT_PORT</key>
+    <string>3474</string>
+    <key>AGENT_VAULT_HOME</key>
+    <string>/Users/nilsmacmini/.agent-vault</string>
+    <key>AGENT_VAULT_STORAGE_ROOT</key>
+    <string>/Users/nilsmacmini/.agent-vault/storage</string>
+    <key>AGENT_VAULT_DB</key>
+    <string>/Users/nilsmacmini/.agent-vault/agent-vault.sqlite</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/nilsmacmini/agent-vault</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/nilsmacmini/.agent-vault/logs/server.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/nilsmacmini/.agent-vault/logs/server.err.log</string>
+</dict>
+</plist>
