@@ -531,19 +531,19 @@ function renderHtml(): string {
       :root {
         color-scheme: dark;
         font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-        background: #111110;
-        color: #eee7db;
-        --bg: #111110;
-        --panel: rgba(25, 25, 24, 0.72);
-        --panel-deep: rgba(17, 17, 16, 0.86);
-        --line: rgba(238, 231, 219, 0.075);
-        --line-strong: rgba(238, 231, 219, 0.16);
-        --text: #eee7db;
-        --muted: rgba(238, 231, 219, 0.58);
-        --faint: rgba(238, 231, 219, 0.34);
-        --ghost: rgba(238, 231, 219, 0.19);
-        --accent: #c8bca8;
-        --accent-soft: rgba(200, 188, 168, 0.1);
+        background: transparent;
+        color: #ede6da;
+        --bg: rgba(34, 33, 30, 0.78);
+        --panel: rgba(55, 54, 50, 0.44);
+        --panel-deep: rgba(22, 22, 20, 0.66);
+        --line: rgba(237, 230, 218, 0.078);
+        --line-strong: rgba(237, 230, 218, 0.15);
+        --text: #ede6da;
+        --muted: rgba(237, 230, 218, 0.61);
+        --faint: rgba(237, 230, 218, 0.36);
+        --ghost: rgba(237, 230, 218, 0.19);
+        --accent: #d0c2aa;
+        --accent-soft: rgba(208, 194, 170, 0.11);
         --warn: #d7bc86;
         --ok: #b4c8a2;
         --danger: #c38f82;
@@ -552,9 +552,19 @@ function renderHtml(): string {
       body {
         margin: 0;
         min-height: 100svh;
-        background: var(--bg);
+        background: transparent;
         overflow: hidden;
         -webkit-font-smoothing: antialiased;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        pointer-events: none;
+        background: rgba(34, 33, 30, 0.78);
+        backdrop-filter: blur(26px) saturate(1.08);
+        -webkit-backdrop-filter: blur(26px) saturate(1.08);
       }
       body.dragging::after {
         content: "Drop to Agent Vault";
@@ -563,9 +573,9 @@ function renderHtml(): string {
         bottom: 31px;
         z-index: 20;
         transform: translateX(-50%);
-        color: rgba(238, 231, 219, 0.78);
-        background: rgba(21, 21, 20, 0.76);
-        border: 1px solid rgba(238, 231, 219, 0.13);
+        color: rgba(237, 230, 218, 0.82);
+        background: rgba(58, 56, 52, 0.58);
+        border: 1px solid rgba(237, 230, 218, 0.12);
         border-radius: 999px;
         padding: 8px 12px;
         font-size: 11px;
@@ -580,13 +590,13 @@ function renderHtml(): string {
         -webkit-tap-highlight-color: transparent;
       }
       ::selection {
-        background: rgba(238, 231, 219, 0.18);
+        background: rgba(237, 230, 218, 0.18);
       }
       .shell {
         position: relative;
         min-height: 100svh;
         padding: 21px 34px 31px 93px;
-        background: #111110;
+        background: transparent;
       }
       .topline {
         position: relative;
@@ -596,13 +606,14 @@ function renderHtml(): string {
         grid-template-columns: auto minmax(0, 1fr) auto;
         gap: 12px;
         align-items: center;
+        border-bottom: 1px solid rgba(237, 230, 218, 0.08);
       }
       .add-button,
       .icon-button,
       .text-button,
       .schema-tool {
         border: 1px solid transparent;
-        color: rgba(238, 231, 219, 0.66);
+        color: rgba(237, 230, 218, 0.66);
         background: transparent;
         cursor: pointer;
         transition: color 140ms ease, border-color 140ms ease, background 140ms ease, transform 140ms ease;
@@ -613,9 +624,9 @@ function renderHtml(): string {
         border-radius: 9px;
         display: grid;
         place-items: center;
-        color: rgba(238, 231, 219, 0.88);
-        background: rgba(238, 231, 219, 0.08);
-        border-color: rgba(238, 231, 219, 0.12);
+        color: rgba(237, 230, 218, 0.88);
+        background: rgba(237, 230, 218, 0.08);
+        border-color: rgba(237, 230, 218, 0.12);
         font-size: 19px;
         line-height: 1;
       }
@@ -624,14 +635,14 @@ function renderHtml(): string {
         display: flex;
         align-items: center;
         gap: 8px;
-        color: rgba(238, 231, 219, 0.61);
+        color: rgba(237, 230, 218, 0.61);
         font-size: 11px;
         font-weight: 520;
         white-space: nowrap;
         overflow: hidden;
       }
       .pathline strong {
-        color: rgba(238, 231, 219, 0.82);
+        color: rgba(237, 230, 218, 0.82);
         font-weight: 560;
       }
       .pathline span {
@@ -651,20 +662,20 @@ function renderHtml(): string {
         border-radius: 8px;
         font-size: 11px;
         font-weight: 540;
-        color: rgba(238, 231, 219, 0.55);
+        color: rgba(237, 230, 218, 0.55);
       }
       .text-button:hover,
       .icon-button:hover,
       .schema-tool:hover,
       .add-button:hover {
-        color: rgba(238, 231, 219, 0.9);
-        background: rgba(238, 231, 219, 0.055);
-        border-color: rgba(238, 231, 219, 0.1);
+        color: rgba(237, 230, 218, 0.9);
+        background: rgba(237, 230, 218, 0.055);
+        border-color: rgba(237, 230, 218, 0.1);
       }
       .text-button.primary {
-        color: rgba(238, 231, 219, 0.84);
-        background: rgba(238, 231, 219, 0.09);
-        border-color: rgba(238, 231, 219, 0.11);
+        color: rgba(237, 230, 218, 0.84);
+        background: rgba(237, 230, 218, 0.09);
+        border-color: rgba(237, 230, 218, 0.11);
       }
       .nav-float {
         position: fixed;
@@ -683,8 +694,9 @@ function renderHtml(): string {
         place-items: center;
       }
       .icon-button.active {
-        color: rgba(238, 231, 219, 0.92);
-        background: rgba(238, 231, 219, 0.08);
+        color: rgba(237, 230, 218, 0.92);
+        background: rgba(237, 230, 218, 0.08);
+        border: 1px solid rgba(237, 230, 218, 0.095);
       }
       .mini-icon {
         position: relative;
@@ -754,7 +766,7 @@ function renderHtml(): string {
       .side-title,
       .schema-title {
         margin: 0;
-        color: rgba(238, 231, 219, 0.82);
+        color: rgba(237, 230, 218, 0.82);
         font-size: 11px;
         line-height: 1;
         font-weight: 560;
@@ -801,9 +813,11 @@ function renderHtml(): string {
         width: 52px;
         height: 38px;
         border-radius: 6px;
-        border: 1px solid rgba(238, 231, 219, 0.14);
-        background: rgba(238, 231, 219, 0.04);
+        border: 1px solid rgba(237, 230, 218, 0.14);
+        background: rgba(237, 230, 218, 0.055);
         box-shadow: 0 22px 50px rgba(0, 0, 0, 0.22);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
       }
       .folder-mark::before {
         content: "";
@@ -812,14 +826,14 @@ function renderHtml(): string {
         top: -7px;
         width: 22px;
         height: 9px;
-        border: 1px solid rgba(238, 231, 219, 0.12);
+        border: 1px solid rgba(237, 230, 218, 0.12);
         border-bottom: 0;
         border-radius: 5px 5px 0 0;
-        background: rgba(238, 231, 219, 0.045);
+        background: rgba(237, 230, 218, 0.045);
       }
       .source-title {
         max-width: 210px;
-        color: rgba(238, 231, 219, 0.9);
+        color: rgba(237, 230, 218, 0.9);
         font-size: 17px;
         line-height: 1.13;
         font-weight: 580;
@@ -839,20 +853,20 @@ function renderHtml(): string {
         gap: 10px;
         flex-wrap: wrap;
         align-items: center;
-        color: rgba(238, 231, 219, 0.45);
+        color: rgba(237, 230, 218, 0.45);
         font-size: 11px;
       }
       .source-action {
         border: 0;
         padding: 0;
-        color: rgba(238, 231, 219, 0.44);
+        color: rgba(237, 230, 218, 0.44);
         background: transparent;
         cursor: pointer;
         font-size: 11px;
         font-weight: 520;
       }
       .source-action:hover {
-        color: rgba(238, 231, 219, 0.82);
+        color: rgba(237, 230, 218, 0.82);
       }
       .source-action.danger:hover {
         color: var(--danger);
@@ -862,7 +876,7 @@ function renderHtml(): string {
         top: 23%;
         width: min(420px, 70vw);
         padding-left: 0;
-        color: rgba(238, 231, 219, 0.42);
+        color: rgba(237, 230, 218, 0.42);
         font-size: 14px;
         line-height: 1.45;
       }
@@ -879,31 +893,31 @@ function renderHtml(): string {
       input {
         height: 28px;
         min-width: 0;
-        color: rgba(238, 231, 219, 0.76);
+        color: rgba(237, 230, 218, 0.76);
         background: transparent;
         border: 0;
-        border-bottom: 1px solid rgba(238, 231, 219, 0.11);
+        border-bottom: 1px solid rgba(237, 230, 218, 0.11);
         border-radius: 0;
         padding: 0 2px;
         outline: none;
         font-size: 11px;
       }
       input::placeholder {
-        color: rgba(238, 231, 219, 0.3);
+        color: rgba(237, 230, 218, 0.3);
       }
       input:focus {
-        border-bottom-color: rgba(238, 231, 219, 0.25);
+        border-bottom-color: rgba(237, 230, 218, 0.25);
       }
       .quiet-submit {
         border: 0;
         padding: 0 2px;
-        color: rgba(238, 231, 219, 0.47);
+        color: rgba(237, 230, 218, 0.47);
         background: transparent;
         cursor: pointer;
         font-size: 12px;
       }
       .quiet-submit:hover {
-        color: rgba(238, 231, 219, 0.84);
+        color: rgba(237, 230, 218, 0.84);
       }
       .side {
         flex: 0 0 330px;
@@ -919,6 +933,12 @@ function renderHtml(): string {
         grid-template-rows: auto minmax(0, 1fr);
         gap: 17px;
         overflow: hidden;
+        border: 1px solid rgba(237, 230, 218, 0.072);
+        border-radius: 13px;
+        background: rgba(55, 54, 50, 0.42);
+        padding: 15px 14px;
+        backdrop-filter: blur(22px) saturate(1.04);
+        -webkit-backdrop-filter: blur(22px) saturate(1.04);
       }
       .side-head {
         display: flex;
@@ -945,7 +965,7 @@ function renderHtml(): string {
         padding-top: 18px;
       }
       .space-title {
-        color: rgba(238, 231, 219, 0.84);
+        color: rgba(237, 230, 218, 0.84);
         font-size: 16px;
         line-height: 1.15;
         font-weight: 560;
@@ -968,7 +988,7 @@ function renderHtml(): string {
         min-width: 0;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 10.5px;
-        color: rgba(238, 231, 219, 0.48);
+        color: rgba(237, 230, 218, 0.48);
         overflow-wrap: anywhere;
       }
       .metric {
@@ -977,7 +997,7 @@ function renderHtml(): string {
         white-space: nowrap;
       }
       .activity-message {
-        color: rgba(238, 231, 219, 0.64);
+        color: rgba(237, 230, 218, 0.64);
         font-size: 12px;
         line-height: 1.35;
       }
@@ -988,7 +1008,7 @@ function renderHtml(): string {
       }
       .device-name,
       .stat-label {
-        color: rgba(238, 231, 219, 0.68);
+        color: rgba(237, 230, 218, 0.68);
         font-size: 12px;
         line-height: 1.35;
         overflow-wrap: anywhere;
@@ -1001,7 +1021,7 @@ function renderHtml(): string {
         white-space: nowrap;
       }
       .change-op {
-        color: rgba(238, 231, 219, 0.58);
+        color: rgba(237, 230, 218, 0.58);
       }
       .empty-note {
         color: var(--faint);
@@ -1009,9 +1029,9 @@ function renderHtml(): string {
         line-height: 1.45;
       }
       .status-pill {
-        color: rgba(238, 231, 219, 0.4);
+        color: rgba(237, 230, 218, 0.4);
         font-size: 10.5px;
-        border: 1px solid rgba(238, 231, 219, 0.09);
+        border: 1px solid rgba(237, 230, 218, 0.09);
         border-radius: 999px;
         padding: 3px 7px;
       }
@@ -1048,12 +1068,12 @@ function renderHtml(): string {
         min-height: 0;
         overflow: hidden;
         cursor: grab;
-        border: 1px solid rgba(238, 231, 219, 0.055);
+        border: 1px solid rgba(237, 230, 218, 0.07);
         border-radius: 13px;
-        background-color: rgba(14, 14, 13, 0.38);
+        background-color: rgba(28, 27, 25, 0.52);
         background-image:
-          linear-gradient(rgba(238, 231, 219, 0.035) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(238, 231, 219, 0.035) 1px, transparent 1px);
+          linear-gradient(rgba(237, 230, 218, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(237, 230, 218, 0.035) 1px, transparent 1px);
         background-size: 44px 44px;
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
@@ -1077,7 +1097,7 @@ function renderHtml(): string {
         pointer-events: none;
       }
       .schema-line {
-        stroke: rgba(238, 231, 219, 0.18);
+        stroke: rgba(237, 230, 218, 0.18);
         stroke-width: 1;
         fill: none;
       }
@@ -1086,24 +1106,24 @@ function renderHtml(): string {
         width: 188px;
         min-height: 86px;
         padding: 13px 14px 12px;
-        border: 1px solid rgba(238, 231, 219, 0.12);
+        border: 1px solid rgba(237, 230, 218, 0.12);
         border-radius: 10px;
-        background: rgba(20, 20, 19, 0.82);
+        background: rgba(55, 54, 50, 0.5);
         backdrop-filter: blur(24px);
         -webkit-backdrop-filter: blur(24px);
       }
       .schema-node.source-node {
-        border-color: rgba(200, 188, 168, 0.18);
+        border-color: rgba(208, 194, 170, 0.18);
       }
       .node-kind {
-        color: rgba(238, 231, 219, 0.36);
+        color: rgba(237, 230, 218, 0.36);
         font-size: 10px;
         text-transform: uppercase;
         letter-spacing: 0.02em;
       }
       .node-title {
         margin-top: 8px;
-        color: rgba(238, 231, 219, 0.86);
+        color: rgba(237, 230, 218, 0.86);
         font-size: 14px;
         line-height: 1.2;
         font-weight: 560;
@@ -1122,9 +1142,9 @@ function renderHtml(): string {
         bottom: 24px;
         z-index: 30;
         max-width: min(390px, calc(100vw - 50px));
-        color: rgba(238, 231, 219, 0.84);
-        background: rgba(19, 19, 18, 0.82);
-        border: 1px solid rgba(238, 231, 219, 0.12);
+        color: rgba(237, 230, 218, 0.84);
+        background: rgba(58, 56, 52, 0.58);
+        border: 1px solid rgba(237, 230, 218, 0.12);
         border-radius: 10px;
         padding: 10px 12px;
         font-size: 11px;

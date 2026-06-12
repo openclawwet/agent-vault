@@ -1,31 +1,76 @@
 import Cocoa
 import WebKit
 
+private struct VaultSummary: Decodable {
+    let mainPendingActions: Int
+    let shares: [VaultShare]
+    let devices: [VaultDevice]
+    let currentDeviceId: String
+    let devicesAdminVisible: Bool
+    let flowStats: [VaultFlow]
+}
+
+private struct VaultShare: Decodable {
+    let label: String
+    let pendingActions: Int
+    let localFileCount: Int
+    let localSize: Int
+    let remoteFileCount: Int
+    let remoteSize: Int
+}
+
+private struct VaultDevice: Decodable {
+    let id: String
+    let name: String
+    let scopes: [VaultScope]?
+}
+
+private struct VaultScope: Decodable {
+    let space: String?
+}
+
+private struct VaultFlow: Decodable {
+    let label: String
+    let events: Int
+    let bytes: Int
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var webView: WKWebView?
     private var serverProcess: Process?
+    private var statusItem: NSStatusItem?
+    private var desktopUrl: URL?
+    private var summaryTimer: Timer?
+    private var latestSummary: VaultSummary?
     private var outputBuffer = ""
     private var didLoadServer = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        NSApp.setActivationPolicy(.accessory)
         installMenu()
+        installStatusItem()
         createWindow()
         launchDesktopServer()
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         stopDesktopServer()
+        summaryTimer?.invalidate()
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
     }
 
     func windowWillClose(_ notification: Notification) {
-        stopDesktopServer()
+        window?.orderOut(nil)
     }
 
     private func installMenu() {
@@ -36,6 +81,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
         NSApp.mainMenu = mainMenu
+    }
+
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = statusImage(active: false)
+        item.button?.imagePosition = .imageOnly
+        item.button?.toolTip = "Agent Vault"
+        statusItem = item
+        rebuildStatusMenu(statusText: "Starting", summary: nil)
     }
 
     private func createWindow() {
@@ -57,9 +111,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.backgroundColor = NSColor(red: 0.067, green: 0.067, blue: 0.063, alpha: 1.0)
+        window.isOpaque = false
+        window.backgroundColor = NSColor.clear
         window.minSize = NSSize(width: 920, height: 620)
-        window.contentView = webView
+        window.hasShadow = true
+
+        let materialView = NSVisualEffectView(frame: window.contentView?.bounds ?? .zero)
+        materialView.material = .hudWindow
+        materialView.blendingMode = .behindWindow
+        materialView.state = .active
+        materialView.autoresizingMask = [.width, .height]
+        materialView.addSubview(webView)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: materialView.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: materialView.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: materialView.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: materialView.bottomAnchor)
+        ])
+
+        window.contentView = materialView
         window.delegate = self
         window.center()
         window.setFrameAutosaveName("AgentVaultMainWindow")
@@ -145,6 +216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         didLoadServer = true
+        desktopUrl = url
+        statusItem?.button?.image = statusImage(active: true)
+        rebuildStatusMenu(statusText: "Connected", summary: latestSummary)
+        startSummaryPolling()
         webView?.load(URLRequest(url: url))
     }
 
@@ -155,7 +230,167 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showError(_ message: String) {
+        statusItem?.button?.image = statusImage(active: false)
+        rebuildStatusMenu(statusText: "Offline", summary: latestSummary)
         webView?.loadHTMLString(loadingHtml(message.isEmpty ? "Agent Vault could not start." : message), baseURL: nil)
+    }
+
+    private func startSummaryPolling() {
+        summaryTimer?.invalidate()
+        pollSummary()
+        summaryTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.pollSummary()
+        }
+    }
+
+    private func pollSummary() {
+        guard let url = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/summary") else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                guard error == nil, let data else {
+                    self?.rebuildStatusMenu(statusText: "Offline", summary: self?.latestSummary)
+                    return
+                }
+                do {
+                    let summary = try JSONDecoder().decode(VaultSummary.self, from: data)
+                    self?.latestSummary = summary
+                    self?.statusItem?.button?.image = self?.statusImage(active: true)
+                    self?.rebuildStatusMenu(statusText: "Connected", summary: summary)
+                } catch {
+                    self?.rebuildStatusMenu(statusText: "Connected", summary: self?.latestSummary)
+                }
+            }
+        }.resume()
+    }
+
+    private func rebuildStatusMenu(statusText: String, summary: VaultSummary?) {
+        let menu = NSMenu()
+        let title = NSMenuItem(title: "Agent Vault", action: nil, keyEquivalent: "")
+        title.isEnabled = false
+        menu.addItem(title)
+
+        let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
+
+        if let summary {
+            let pending = summary.mainPendingActions + summary.shares.reduce(0) { $0 + $1.pendingActions }
+            let sourceText = summary.shares.count == 1 ? "1 source" : "\(summary.shares.count) sources"
+            let pendingText = pending == 1 ? "1 pending" : "\(pending) pending"
+            let overview = NSMenuItem(title: "\(sourceText), \(pendingText)", action: nil, keyEquivalent: "")
+            overview.isEnabled = false
+            menu.addItem(overview)
+
+            menu.addItem(.separator())
+            let devicesTitle = NSMenuItem(title: summary.devicesAdminVisible ? "Devices" : "Current Device", action: nil, keyEquivalent: "")
+            devicesTitle.isEnabled = false
+            menu.addItem(devicesTitle)
+
+            for device in summary.devices.prefix(5) {
+                let current = device.id == summary.currentDeviceId ? " current" : ""
+                let spaces = device.scopes?.count ?? 0
+                let item = NSMenuItem(title: "\(device.name)\(current) - \(spaces) spaces", action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                menu.addItem(item)
+            }
+
+            if !summary.flowStats.isEmpty {
+                menu.addItem(.separator())
+                for stat in summary.flowStats.prefix(3) {
+                    let item = NSMenuItem(title: "\(stat.label): \(stat.events) events, \(formatBytes(stat.bytes))", action: nil, keyEquivalent: "")
+                    item.isEnabled = false
+                    menu.addItem(item)
+                }
+            }
+        }
+
+        menu.addItem(.separator())
+        let openWindow = NSMenuItem(title: "Open Window", action: #selector(showMainWindow(_:)), keyEquivalent: "")
+        openWindow.target = self
+        menu.addItem(openWindow)
+
+        let sync = NSMenuItem(title: "Sync Now", action: #selector(syncNow(_:)), keyEquivalent: "")
+        sync.target = self
+        menu.addItem(sync)
+
+        let refresh = NSMenuItem(title: "Refresh Status", action: #selector(refreshStatus(_:)), keyEquivalent: "")
+        refresh.target = self
+        menu.addItem(refresh)
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Agent Vault", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        statusItem?.menu = menu
+    }
+
+    @objc private func showMainWindow(_ sender: Any?) {
+        if window == nil {
+            createWindow()
+        }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        if let url = desktopUrl {
+            webView?.load(URLRequest(url: url))
+        }
+    }
+
+    @objc private func refreshStatus(_ sender: Any?) {
+        pollSummary()
+    }
+
+    @objc private func syncNow(_ sender: Any?) {
+        guard let url = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/sync") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                self?.pollSummary()
+            }
+        }.resume()
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        if bytes <= 0 { return "0 B" }
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var value = Double(bytes)
+        var index = 0
+        while value >= 1024 && index < units.count - 1 {
+            value /= 1024
+            index += 1
+        }
+        let decimals = value >= 10 || index == 0 ? 0 : 1
+        return String(format: "%.\(decimals)f %@", value, units[index])
+    }
+
+    private func statusImage(active: Bool) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        let color = active
+            ? NSColor(calibratedRed: 0.92, green: 0.88, blue: 0.80, alpha: 0.96)
+            : NSColor(calibratedRed: 0.92, green: 0.88, blue: 0.80, alpha: 0.46)
+        color.setStroke()
+        color.withAlphaComponent(active ? 0.18 : 0.08).setFill()
+
+        let body = NSBezierPath(roundedRect: NSRect(x: 3.5, y: 5, width: 11, height: 8.5), xRadius: 2.2, yRadius: 2.2)
+        body.lineWidth = 1.4
+        body.fill()
+        body.stroke()
+
+        let tab = NSBezierPath()
+        tab.move(to: NSPoint(x: 4.8, y: 13.1))
+        tab.line(to: NSPoint(x: 7.2, y: 15.1))
+        tab.line(to: NSPoint(x: 10.1, y: 13.1))
+        tab.lineWidth = 1.4
+        tab.stroke()
+
+        if active {
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 12.1, y: 4.0, width: 3.2, height: 3.2)).fill()
+        }
+
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 
     private func loadingHtml(_ message: String) -> String {
