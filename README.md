@@ -64,6 +64,14 @@ Device tokens are stored hashed in SQLite and returned only once when created or
 
 ## Mac sync CLI
 
+From the MacBook, install the client over the private Tailnet:
+
+```bash
+curl -fsSL https://mac-mini-von-nils.tail8ca788.ts.net:8476/install/macbook.sh | bash
+```
+
+That creates `~/AgentVault`, copies the client from the Mac Mini over SSH, and initializes sync against the live Agent Vault server.
+
 ```bash
 pnpm --filter @agent-vault/mac-sync build
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync init \
@@ -92,7 +100,13 @@ curl -X POST \
   http://127.0.0.1:3474/devices
 ```
 
-Start the web app during local development:
+In live local use, the built PWA is served by the Agent Vault server:
+
+```bash
+open https://mac-mini-von-nils.tail8ca788.ts.net:8476/
+```
+
+Start the separate web app only during UI development:
 
 ```bash
 pnpm dev:web

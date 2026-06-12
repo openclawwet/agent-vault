@@ -70,6 +70,10 @@ function loadSession(): VaultSession | undefined {
   return undefined;
 }
 
+function defaultServerUrl(): string {
+  return window.location.origin || "http://127.0.0.1:3474";
+}
+
 function saveSession(session: VaultSession): void {
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
 }
@@ -304,7 +308,7 @@ function renderLogin(): string {
         <form id="login-form" class="login-form">
           <label>
             Server URL
-            <input id="server-url" name="serverUrl" type="url" required placeholder="http://127.0.0.1:3474" value="${escapeHtml(saved?.serverUrl ?? "http://127.0.0.1:3474")}" />
+            <input id="server-url" name="serverUrl" type="url" required placeholder="${escapeHtml(defaultServerUrl())}" value="${escapeHtml(saved?.serverUrl ?? defaultServerUrl())}" />
           </label>
           <label>
             Device token

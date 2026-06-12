@@ -72,11 +72,19 @@ Device tokens are shown once. Store them locally, not in docs or chat.
 
 ## MacBook sync
 
+One-command install from the MacBook while it is connected to Tailscale:
+
+```bash
+curl -fsSL https://mac-mini-von-nils.tail8ca788.ts.net:8476/install/macbook.sh | bash
+```
+
+The installer copies the client from the Mac Mini over SSH, installs pnpm dependencies, initializes `~/AgentVault`, and tries to fetch the MacBook device token from the Mac Mini without printing it. If SSH cannot read the token, it prompts for the token without echoing input.
+
 Initialize the sync folder on the MacBook:
 
 ```bash
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync init \
-  --server https://mac-mini-von-nils.tail8ca788.ts.net \
+  --server https://mac-mini-von-nils.tail8ca788.ts.net:8476 \
   --token "<macbook-device-token>" \
   --dir ~/AgentVault \
   --space "MacBook Shared"
@@ -98,26 +106,20 @@ Conflicts are written under `~/AgentVault/.agent-vault/conflicts` instead of ove
 The local Tailscale CLI supports:
 
 ```bash
-tailscale serve --bg 3474
+tailscale serve --https=8476 --bg 3474
 tailscale serve status
 ```
 
 Use that only after the server is intentionally running. V1 does not use Funnel and does not create public links.
 
-For the web app during development:
-
-```bash
-pnpm dev:web
-```
-
-Open the PWA from a Tailnet-reachable URL, enter the Agent Vault server URL and the phone device token, then use `Inbox` for quick uploads.
+Open the PWA at `https://mac-mini-von-nils.tail8ca788.ts.net:8476/`, enter the phone device token, then use `Inbox` for quick uploads. The built PWA is served by the Agent Vault server; `pnpm dev:web` is only needed for local UI development.
 
 ## CB connector
 
 CB uses only the read-only Agent Desk token:
 
 ```env
-AGENT_VAULT_URL=https://mac-mini-von-nils.tail8ca788.ts.net
+AGENT_VAULT_URL=https://mac-mini-von-nils.tail8ca788.ts.net:8476
 AGENT_VAULT_TOKEN=<agent-desk-device-token>
 ```
 

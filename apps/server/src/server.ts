@@ -1,6 +1,8 @@
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { pathToFileURL } from "node:url";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   DEFAULT_SPACE,
   type CurrentDeviceResult,
@@ -14,6 +16,9 @@ import { FileStorage, normalizeSpaceName, normalizeVaultPath, sha256Buffer, Vaul
 import { extractBearerToken, tokenHash } from "./auth.js";
 import { type AgentVaultConfigOverrides, resolveConfig, type AgentVaultConfig } from "./config.js";
 import { VaultDb } from "./db/vaultDb.js";
+
+const WEB_DIST_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+const API_ROUTE_ROOTS = new Set(["health", "me", "spaces", "devices"]);
 
 class HttpError extends Error {
   constructor(
@@ -70,6 +75,84 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 function sendNoContent(res: ServerResponse): void {
   res.writeHead(204, corsHeaders());
   res.end();
+}
+
+function contentTypeFor(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase();
+  switch (extension) {
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".sh":
+      return "text/plain; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".webmanifest":
+      return "application/manifest+json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function webAssetPath(url: URL): string | undefined {
+  const pathname = url.pathname === "/" || url.pathname === "/app" ? "/index.html" : url.pathname;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return undefined;
+  }
+  if (decoded.includes("\0")) {
+    return undefined;
+  }
+
+  const candidate = path.resolve(WEB_DIST_ROOT, decoded.replace(/^[/\\]+/, ""));
+  if (candidate !== WEB_DIST_ROOT && !candidate.startsWith(`${WEB_DIST_ROOT}${path.sep}`)) {
+    return undefined;
+  }
+  return candidate;
+}
+
+async function trySendWebAsset(url: URL, method: string, segments: string[], res: ServerResponse): Promise<boolean> {
+  if ((method !== "GET" && method !== "HEAD") || API_ROUTE_ROOTS.has(segments[0] ?? "")) {
+    return false;
+  }
+
+  const assetPath = webAssetPath(url);
+  if (!assetPath) {
+    throw new HttpError(400, "invalid_static_path", "Static asset path is invalid.");
+  }
+
+  try {
+    const body = await readFile(assetPath);
+    res.writeHead(200, {
+      "content-type": contentTypeFor(assetPath),
+      "content-length": body.byteLength,
+      "cache-control": path.basename(assetPath) === "index.html" ? "no-store" : "public, max-age=31536000, immutable",
+    });
+    res.end(method === "HEAD" ? undefined : body);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+    if (!path.extname(url.pathname)) {
+      const body = await readFile(path.join(WEB_DIST_ROOT, "index.html"));
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-length": body.byteLength,
+        "cache-control": "no-store",
+      });
+      res.end(method === "HEAD" ? undefined : body);
+      return true;
+    }
+    throw new HttpError(404, "static_asset_not_found", "Static asset was not found.");
+  }
 }
 
 function sendError(res: ServerResponse, error: unknown): void {
@@ -332,6 +415,10 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
       dbPath: app.config.dbPath,
     };
     sendJson(res, 200, body);
+    return;
+  }
+
+  if (await trySendWebAsset(url, method, segments, res)) {
     return;
   }
 
