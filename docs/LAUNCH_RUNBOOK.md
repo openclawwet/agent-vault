@@ -102,7 +102,7 @@ pnpm --filter @agent-vault/mac-sync exec agent-vault-sync ui
 
 Conflicts are written under `~/AgentVault/.agent-vault/conflicts` instead of overwriting edits.
 
-The desktop UI runs locally on the device that starts it. It opens `http://127.0.0.1:4786/desktop`, stores shared-folder registrations under `~/.agent-vault/shares.json`, keeps the Vault token out of the browser bundle, and mirrors each shared folder under its own Vault prefix so multiple folders do not collide.
+The desktop UI runs locally on the device that starts it. The Onecurl installer places `Agent Vault.app` in `~/Applications`; `agent-vault-sync ui` opens that macOS app, which starts a private local UI bridge only while the app is open. Shared-folder registrations live under `~/.agent-vault/shares.json`, the Vault token stays out of the UI bundle, and each shared folder mirrors under its own Vault prefix so multiple folders do not collide. Use `agent-vault-sync ui --browser` only for debug.
 
 ## Phone PWA over Tailscale
 

@@ -386,113 +386,157 @@ function renderHtml(): string {
     <style>
       :root {
         color-scheme: dark;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #101312;
-        color: #eef3ee;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+        background: #0d100f;
+        color: #edf4ef;
+        --bg: #0d100f;
+        --panel: rgba(19, 24, 22, 0.74);
+        --panel-soft: rgba(255, 255, 255, 0.055);
+        --line: rgba(255, 255, 255, 0.105);
+        --line-strong: rgba(255, 255, 255, 0.18);
+        --muted: rgba(237, 244, 239, 0.62);
+        --faint: rgba(237, 244, 239, 0.42);
+        --accent: #a8eec7;
+        --accent-ink: #082019;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100svh;
-        background:
-          linear-gradient(120deg, rgba(29, 47, 44, 0.8), rgba(16, 19, 18, 0.96) 44%, rgba(44, 39, 29, 0.92));
+        background: linear-gradient(145deg, #0d100f 0%, #121815 48%, #181611 100%);
+        overflow: hidden;
       }
       button, input, select { font: inherit; }
       .shell {
         min-height: 100svh;
-        padding: 22px;
+        padding: 0;
         display: grid;
-        grid-template-rows: auto 1fr;
-        gap: 18px;
+        grid-template-rows: 54px 1fr;
+        gap: 0;
       }
       .topbar {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 16px;
+        padding: 0 18px 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(11, 14, 13, 0.74);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
       }
       .brand {
         display: flex;
-        align-items: baseline;
-        gap: 12px;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .traffic {
+        display: flex;
+        gap: 7px;
+        padding-right: 5px;
+        width: 58px;
+        flex: 0 0 58px;
+      }
+      .traffic span {
+        display: none;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.22);
       }
       h1 {
         margin: 0;
-        font-size: clamp(28px, 5vw, 48px);
-        line-height: 0.95;
+        font-size: 15px;
+        line-height: 1;
         letter-spacing: 0;
+        white-space: nowrap;
       }
-      .subtle { color: #9ba9a2; }
+      .device-line {
+        min-width: 0;
+        color: var(--muted);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .subtle { color: var(--muted); }
       .actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
       .button {
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        color: #eef3ee;
-        background: rgba(255, 255, 255, 0.08);
-        min-height: 40px;
-        padding: 0 14px;
+        border: 1px solid var(--line);
+        color: #edf4ef;
+        background: rgba(255, 255, 255, 0.07);
+        min-height: 34px;
+        padding: 0 12px;
         border-radius: 8px;
         cursor: pointer;
-        transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+        transition: background 160ms ease, border-color 160ms ease, transform 160ms ease, color 160ms ease;
       }
-      .button:hover { background: rgba(255, 255, 255, 0.13); border-color: rgba(255, 255, 255, 0.24); transform: translateY(-1px); }
-      .button.primary { background: #9be4bf; color: #082018; border-color: transparent; }
+      .button:hover { background: rgba(255, 255, 255, 0.12); border-color: var(--line-strong); transform: translateY(-1px); }
+      .button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
       .button.danger { color: #ffd9cf; }
       .grid {
         display: grid;
-        grid-template-columns: minmax(280px, 0.86fr) minmax(340px, 1.32fr) minmax(280px, 0.82fr);
-        gap: 16px;
+        grid-template-columns: minmax(290px, 340px) minmax(420px, 1fr) minmax(300px, 360px);
+        gap: 1px;
         min-height: 0;
+        background: var(--line);
       }
       .panel, .share, .dropzone {
-        background: rgba(18, 24, 22, 0.56);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        box-shadow: 0 18px 70px rgba(0, 0, 0, 0.22);
-        backdrop-filter: blur(24px);
-        -webkit-backdrop-filter: blur(24px);
-        border-radius: 8px;
+        background: var(--panel);
+        backdrop-filter: blur(22px);
+        -webkit-backdrop-filter: blur(22px);
       }
       .panel {
         min-height: 0;
         overflow: hidden;
         display: flex;
         flex-direction: column;
+        border: 0;
+        border-radius: 0;
       }
       .panel-head {
-        padding: 16px 16px 12px;
+        min-height: 52px;
+        padding: 12px 16px;
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: 12px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.025);
       }
-      .panel h2 { margin: 0; font-size: 14px; letter-spacing: 0; }
+      .panel h2 { margin: 0; font-size: 13px; letter-spacing: 0; }
       .panel-body { padding: 14px; overflow: auto; display: grid; gap: 12px; align-content: start; }
       .input-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
       input, select {
         min-width: 0;
-        color: #eef3ee;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.14);
+        color: #edf4ef;
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid var(--line);
         border-radius: 8px;
-        padding: 10px 11px;
+        padding: 9px 10px;
         outline: none;
       }
-      input:focus, select:focus { border-color: #9be4bf; }
+      input:focus, select:focus { border-color: rgba(168, 238, 199, 0.62); }
       .dropzone {
-        min-height: 132px;
+        min-height: 142px;
+        border: 1px dashed rgba(255, 255, 255, 0.18);
         border-style: dashed;
         display: grid;
         place-items: center;
         text-align: center;
-        color: #c8d4ce;
+        color: rgba(237, 244, 239, 0.76);
         padding: 18px;
+        border-radius: 10px;
         transition: background 160ms ease, border-color 160ms ease;
       }
-      .dropzone.active { background: rgba(155, 228, 191, 0.12); border-color: rgba(155, 228, 191, 0.6); }
+      .dropzone.active { background: rgba(168, 238, 199, 0.1); border-color: rgba(168, 238, 199, 0.62); }
       .share {
         padding: 12px;
         display: grid;
         gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
       }
       .share-top, .row {
         display: flex;
@@ -501,19 +545,19 @@ function renderHtml(): string {
         align-items: center;
       }
       .label { font-weight: 650; overflow-wrap: anywhere; }
-      .path { color: #9ba9a2; font-size: 12px; overflow-wrap: anywhere; }
+      .path { color: var(--faint); font-size: 12px; overflow-wrap: anywhere; }
       .chips { display: flex; flex-wrap: wrap; gap: 6px; }
       .chip {
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(255, 255, 255, 0.06);
-        color: #c8d4ce;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.055);
+        color: rgba(237, 244, 239, 0.76);
         padding: 4px 7px;
         border-radius: 999px;
         font-size: 12px;
       }
-      .chip.good { color: #bff4d8; border-color: rgba(155, 228, 191, 0.28); }
+      .chip.good { color: #c9f6dc; border-color: rgba(168, 238, 199, 0.3); }
       .chip.warn { color: #ffdca8; border-color: rgba(255, 207, 137, 0.35); }
-      .space { display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+      .space { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
       .space:last-child { border-bottom: 0; }
       .folder, .change, .activity {
         display: grid;
@@ -523,19 +567,19 @@ function renderHtml(): string {
         border-bottom: 1px solid rgba(255, 255, 255, 0.06);
       }
       .folder:last-child, .change:last-child, .activity:last-child { border-bottom: 0; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #c8d4ce; overflow-wrap: anywhere; }
-      .metric { color: #eef3ee; font-size: 12px; }
-      .empty { color: #9ba9a2; padding: 12px 0; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: rgba(237, 244, 239, 0.76); overflow-wrap: anywhere; }
+      .metric { color: rgba(237, 244, 239, 0.84); font-size: 12px; white-space: nowrap; }
+      .empty { color: var(--muted); padding: 12px 0; }
       .toast {
         position: fixed;
-        right: 22px;
-        bottom: 22px;
-        max-width: min(420px, calc(100vw - 44px));
+        right: 16px;
+        bottom: 16px;
+        max-width: min(420px, calc(100vw - 32px));
         background: rgba(10, 12, 11, 0.84);
-        border: 1px solid rgba(255, 255, 255, 0.14);
+        border: 1px solid var(--line-strong);
         border-radius: 8px;
         padding: 12px 14px;
-        color: #eef3ee;
+        color: #edf4ef;
         opacity: 0;
         transform: translateY(8px);
         transition: opacity 180ms ease, transform 180ms ease;
@@ -543,10 +587,11 @@ function renderHtml(): string {
       .toast.show { opacity: 1; transform: translateY(0); }
       @media (max-width: 1060px) {
         .grid { grid-template-columns: 1fr; }
+        body { overflow: auto; }
         .panel { min-height: 360px; }
       }
       @media (max-width: 640px) {
-        .shell { padding: 14px; }
+        .shell { grid-template-rows: auto 1fr; }
         .topbar { align-items: flex-start; flex-direction: column; }
         .actions, .input-row { width: 100%; }
         .input-row { grid-template-columns: 1fr; }
@@ -558,23 +603,24 @@ function renderHtml(): string {
     <main class="shell">
       <header class="topbar">
         <div class="brand">
+          <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
           <h1>Agent Vault</h1>
-          <div class="subtle" id="connection">Loading</div>
+          <div class="device-line" id="connection">Loading</div>
         </div>
         <div class="actions">
-          <button class="button" id="openFolder">Open folder</button>
-          <button class="button primary" id="syncAll">Sync all</button>
+          <button class="button" id="openFolder">Open sync folder</button>
+          <button class="button primary" id="syncAll">Sync now</button>
         </div>
       </header>
       <section class="grid">
         <aside class="panel">
           <div class="panel-head">
             <h2>Shared folders</h2>
-            <button class="button" id="chooseFolder">+</button>
+            <button class="button" id="chooseFolder">+ Add</button>
           </div>
           <div class="panel-body">
             <div class="input-row">
-              <input id="pathInput" placeholder="/Users/nils/Projects/site" />
+              <input id="pathInput" placeholder="~/Documents/Client Project" />
               <button class="button" id="addPath">Add</button>
             </div>
             <div class="dropzone" id="dropzone">
@@ -588,14 +634,14 @@ function renderHtml(): string {
         </aside>
         <section class="panel">
           <div class="panel-head">
-            <h2>Vault structure</h2>
+            <h2>Vault</h2>
             <span class="chip" id="pending">0 pending</span>
           </div>
           <div class="panel-body" id="structure"></div>
         </section>
         <aside class="panel">
           <div class="panel-head">
-            <h2>Activity log</h2>
+            <h2>Timeline</h2>
             <button class="button" id="refresh">Refresh</button>
           </div>
           <div class="panel-body" id="activity"></div>
@@ -635,7 +681,9 @@ function renderHtml(): string {
       }
       function render() {
         const summary = state.summary;
-        $("connection").textContent = summary.serverUrl + " -> " + summary.defaultSpace;
+        let host = summary.serverUrl;
+        try { host = new URL(summary.serverUrl).host; } catch {}
+        $("connection").textContent = host + " / " + summary.defaultSpace;
         $("pending").textContent = summary.mainPendingActions + " pending";
         $("shares").innerHTML = summary.shares.length ? summary.shares.map((share) =>
           '<div class="share">' +

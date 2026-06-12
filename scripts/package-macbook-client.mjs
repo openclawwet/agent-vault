@@ -10,6 +10,8 @@ const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-vault-client-packag
 const packageRoot = path.join(tempRoot, "agent-vault-client");
 const sourceOutput = path.join(repoRoot, "apps/web/public/install/agent-vault-macbook-client.tar.gz");
 const liveOutput = path.join(repoRoot, "apps/web/dist/install/agent-vault-macbook-client.tar.gz");
+const sourceInstaller = path.join(repoRoot, "apps/web/public/install/macbook.sh");
+const liveInstaller = path.join(repoRoot, "apps/web/dist/install/macbook.sh");
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -40,6 +42,7 @@ try {
     "pnpm-workspace.yaml",
     "apps/mac-sync/package.json",
     "apps/mac-sync/dist",
+    "apps/mac-sync/native/build/Agent Vault.app",
     "packages/core/package.json",
     "packages/core/dist",
     "packages/sync/package.json",
@@ -54,6 +57,7 @@ try {
   try {
     await mkdir(path.dirname(liveOutput), { recursive: true });
     await cp(sourceOutput, liveOutput);
+    await cp(sourceInstaller, liveInstaller);
   } catch (error) {
     if (error instanceof Error) {
       console.warn(`Skipped live dist package copy: ${error.message}`);

@@ -6,3 +6,4 @@ dist/
 *.log
 apps/web/public/install/*.tar.gz
 apps/web/public/install/*.token
+apps/mac-sync/native/build/

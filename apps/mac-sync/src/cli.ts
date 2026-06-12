@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { initConfig, loadConfig } from "./config.js";
+import { openNativeDesktopApp } from "./nativeApp.js";
 import { pullCommand, pushCommand, scanCommand, statusCommand, watchCommand } from "./syncCommands.js";
 import { startDesktopUi } from "./uiServer.js";
 
@@ -51,10 +52,36 @@ if (command === "init") {
     console.log(JSON.stringify(await pullCommand(config), null, 2));
   } else if (command === "watch") {
     await watchCommand(config);
-  } else if (command === "ui") {
+  } else if (command === "serve-ui") {
     const started = await startDesktopUi(config, {
       port: options.port ? Number.parseInt(options.port, 10) : undefined,
-      open: options.open !== "false" && options["no-open"] !== "true",
+      open: false,
+    });
+    console.log(`Agent Vault desktop UI: ${started.url}`);
+    process.once("SIGINT", () => {
+      void started.close().finally(() => process.exit(0));
+    });
+    process.once("SIGTERM", () => {
+      void started.close().finally(() => process.exit(0));
+    });
+    await new Promise(() => undefined);
+  } else if (command === "ui") {
+    const noOpen = options.open === "false" || options["no-open"] === "true";
+    const useBrowser = options.browser === "true" || options.web === "true";
+    if (!noOpen && !useBrowser) {
+      const appPath = await openNativeDesktopApp({ appPath: options.app });
+      if (appPath) {
+        console.log(`Agent Vault app opened: ${appPath}`);
+      } else {
+        console.warn("Agent Vault app is not installed yet. Falling back to browser UI.");
+      }
+      if (appPath) {
+        process.exit(0);
+      }
+    }
+    const started = await startDesktopUi(config, {
+      port: options.port ? Number.parseInt(options.port, 10) : undefined,
+      open: !noOpen,
     });
     console.log(`Agent Vault desktop UI: ${started.url}`);
     process.once("SIGINT", () => {

@@ -5,6 +5,7 @@ SERVER_URL="${AGENT_VAULT_SERVER_URL:-https://mac-mini-von-nils.tail8ca788.ts.ne
 PACKAGE_URL="${AGENT_VAULT_PACKAGE_URL:-$SERVER_URL/install/agent-vault-macbook-client.tar.gz}"
 TOKEN_URL="${AGENT_VAULT_TOKEN_URL:-$SERVER_URL/install/macbook.token}"
 INSTALL_DIR="${AGENT_VAULT_INSTALL_DIR:-$HOME/.agent-vault/client/agent-vault}"
+APP_TARGET="${AGENT_VAULT_APP_PATH:-$HOME/Applications/Agent Vault.app}"
 SYNC_DIR="${AGENT_VAULT_SYNC_DIR:-$HOME/AgentVault}"
 SYNC_SPACE="${AGENT_VAULT_SYNC_SPACE:-MacBook Shared}"
 
@@ -50,6 +51,14 @@ mkdir -p "$INSTALL_DIR/bin"
 ln -sfn "../../../../packages/core" "$INSTALL_DIR/apps/mac-sync/node_modules/@agent-vault/core"
 ln -sfn "../../../../packages/sync" "$INSTALL_DIR/apps/mac-sync/node_modules/@agent-vault/sync"
 ln -sfn "../../../core" "$INSTALL_DIR/packages/sync/node_modules/@agent-vault/core"
+
+APP_SOURCE="$INSTALL_DIR/apps/mac-sync/native/build/Agent Vault.app"
+if [[ -d "$APP_SOURCE" ]]; then
+  mkdir -p "$(dirname "$APP_TARGET")"
+  rm -rf "$APP_TARGET"
+  cp -R "$APP_SOURCE" "$APP_TARGET"
+  chmod +x "$APP_TARGET/Contents/MacOS/AgentVault" 2>/dev/null || true
+fi
 
 cat >"$INSTALL_DIR/bin/agent-vault-sync" <<'SCRIPT'
 #!/usr/bin/env bash
@@ -99,8 +108,9 @@ Sync folder: $SYNC_DIR
 Server: $SERVER_URL
 
 Daily commands:
+  open "$APP_TARGET"
+  "$HOME/.agent-vault/bin/agent-vault-sync" ui
   "$HOME/.agent-vault/bin/agent-vault-sync" push
   "$HOME/.agent-vault/bin/agent-vault-sync" pull
   "$HOME/.agent-vault/bin/agent-vault-sync" watch
-  "$HOME/.agent-vault/bin/agent-vault-sync" ui
 EOF
