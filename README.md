@@ -1,6 +1,6 @@
 # Agent Vault
 
-Agent Vault is a private file vault for Nils' own devices first: Mac Mini as server, MacBook as sync client later, and phone access through a private web app later.
+Agent Vault is a private file vault for Nils' own devices first: Mac Mini as server, MacBook as sync client, and phone access through a private web app.
 
 The first slice is a local tracer. It proves that a file can be uploaded through an authenticated local API, stored as a normal file, indexed in SQLite, listed, and downloaded byte-for-byte.
 
@@ -10,6 +10,7 @@ The first slice is a local tracer. It proves that a file can be uploaded through
 pnpm install
 pnpm build
 pnpm smoke:local
+pnpm smoke:web
 ```
 
 Start the server:
@@ -76,6 +77,26 @@ pnpm --filter @agent-vault/mac-sync exec agent-vault-sync watch
 ```
 
 The CLI keeps sync metadata under `.agent-vault` inside the selected folder and writes conflict review files there instead of overwriting divergent edits.
+
+## Phone PWA
+
+Create a scoped phone token with read/write access to `Inbox`:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $(cat ~/.agent-vault/dev-token)" \
+  -H "content-type: application/json" \
+  -d '{"name":"phone","scopes":[{"space":"Inbox","permissions":["read","write"]},{"space":"Projects","permissions":["read"]}]}' \
+  http://127.0.0.1:3474/devices
+```
+
+Start the web app during local development:
+
+```bash
+pnpm dev:web
+```
+
+The phone UI connects with the server URL and the one-time device token. It shows only spaces allowed by that token, uploads files into the selected space, previews images/PDFs/text files, and downloads files through authenticated API calls. V1 has no public share links and no Tailscale Funnel path.
 
 ## Configuration
 

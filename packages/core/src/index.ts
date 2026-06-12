@@ -8,6 +8,10 @@ export interface SpaceInfo {
   createdAt: string;
 }
 
+export interface SpaceAccessInfo extends SpaceInfo {
+  permissions: VaultPermission[];
+}
+
 export interface DeviceScopeRecord {
   space: string;
   permissions: VaultPermission[];
@@ -80,7 +84,12 @@ export interface ListFilesResult {
 }
 
 export interface ListSpacesResult {
-  spaces: SpaceInfo[];
+  spaces: SpaceAccessInfo[];
+}
+
+export interface CurrentDeviceResult {
+  device: DeviceRecord;
+  spaces: SpaceAccessInfo[];
 }
 
 export interface HealthResult {

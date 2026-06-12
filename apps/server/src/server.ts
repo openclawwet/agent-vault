@@ -1,7 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
-import { DEFAULT_SPACE, type DeviceScopeRecord, type HealthResult, type VaultPermission } from "@agent-vault/core";
+import {
+  DEFAULT_SPACE,
+  type CurrentDeviceResult,
+  type DeviceScopeRecord,
+  type HealthResult,
+  type ListSpacesResult,
+  type SpaceAccessInfo,
+  type VaultPermission,
+} from "@agent-vault/core";
 import { FileStorage, normalizeSpaceName, normalizeVaultPath, sha256Buffer, VaultStorageError } from "@agent-vault/storage";
 import { extractBearerToken, tokenHash } from "./auth.js";
 import { type AgentVaultConfigOverrides, resolveConfig, type AgentVaultConfig } from "./config.js";
@@ -40,13 +48,28 @@ export interface StartedAgentVaultServer {
   close(): Promise<void>;
 }
 
+function corsHeaders(): Record<string, string> {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+    "access-control-allow-headers": "authorization,content-type,idempotency-key,x-agent-vault-token",
+    "access-control-expose-headers": "etag,x-content-sha256,content-length,content-type",
+  };
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = Buffer.from(`${JSON.stringify(body, null, 2)}\n`);
   res.writeHead(status, {
+    ...corsHeaders(),
     "content-type": "application/json; charset=utf-8",
     "content-length": payload.byteLength,
   });
   res.end(payload);
+}
+
+function sendNoContent(res: ServerResponse): void {
+  res.writeHead(204, corsHeaders());
+  res.end();
 }
 
 function sendError(res: ServerResponse, error: unknown): void {
@@ -153,6 +176,40 @@ function hasPermission(auth: AuthContext, space: string, permission: VaultPermis
     }
     return scope.permissions.includes("admin") || scope.permissions.includes(permission);
   });
+}
+
+function permissionsFor(auth: AuthContext, space: string): VaultPermission[] | undefined {
+  const permissions = new Set<VaultPermission>();
+
+  for (const scope of auth.scopes) {
+    if (scope.space !== space) {
+      continue;
+    }
+    for (const permission of scope.permissions) {
+      permissions.add(permission);
+    }
+  }
+
+  if (!permissions.size) {
+    return undefined;
+  }
+
+  return [...permissions];
+}
+
+function listAccessibleSpaces(app: AgentVaultApp, auth: AuthContext): SpaceAccessInfo[] {
+  return app.db
+    .listSpaces()
+    .map((space) => {
+      const permissions = permissionsFor(auth, space.name);
+      return permissions
+        ? {
+            ...space,
+            permissions,
+          }
+        : undefined;
+    })
+    .filter((space): space is SpaceAccessInfo => Boolean(space));
 }
 
 function requirePermission(auth: AuthContext, space: string, permission: VaultPermission): void {
@@ -262,6 +319,11 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
   const segments = routeSegments(url);
   const method = req.method ?? "GET";
 
+  if (method === "OPTIONS") {
+    sendNoContent(res);
+    return;
+  }
+
   if (method === "GET" && segments.length === 1 && segments[0] === "health") {
     const body: HealthResult = {
       ok: true,
@@ -276,7 +338,21 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
   const auth = requireAuth(req, app);
 
   if (method === "GET" && segments.length === 1 && segments[0] === "spaces") {
-    sendJson(res, 200, { spaces: app.db.listSpaces() });
+    const body: ListSpacesResult = { spaces: listAccessibleSpaces(app, auth) };
+    sendJson(res, 200, body);
+    return;
+  }
+
+  if (method === "GET" && segments.length === 1 && segments[0] === "me") {
+    const device = app.db.getDeviceById(auth.deviceId);
+    if (!device) {
+      throw new HttpError(401, "unauthorized", "Device is no longer available.");
+    }
+    const body: CurrentDeviceResult = {
+      device,
+      spaces: listAccessibleSpaces(app, auth),
+    };
+    sendJson(res, 200, body);
     return;
   }
 
@@ -385,6 +461,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     }
 
     res.writeHead(200, {
+      ...corsHeaders(),
       "content-type": "application/octet-stream",
       "content-length": body.byteLength,
       "etag": `"sha256:${file.sha256}"`,

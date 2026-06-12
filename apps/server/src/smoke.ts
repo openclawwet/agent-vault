@@ -86,6 +86,14 @@ try {
   const deniedSpace = await fetch(`${started.url}/spaces/Archive/files`, { headers: macbookAuth });
   assert(deniedSpace.status === 403, "device should not read outside scoped space");
 
+  const scopedSpaces = await fetch(`${started.url}/spaces`, { headers: macbookAuth });
+  assert(scopedSpaces.ok, "scoped spaces endpoint failed");
+  const scopedSpacesJson = await expectJson(scopedSpaces);
+  const scopedSpaceList = scopedSpacesJson.spaces as Array<{ name: string; permissions: string[] }> | undefined;
+  assert(scopedSpaceList?.length === 1, "device should only see scoped spaces");
+  assert(scopedSpaceList?.[0]?.name === space, "scoped space name mismatch");
+  assert(scopedSpaceList?.[0]?.permissions.includes("write"), "scoped space permissions missing");
+
   const deniedDelete = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
     method: "DELETE",
     headers: macbookAuth,

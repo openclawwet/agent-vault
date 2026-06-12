@@ -9,7 +9,9 @@
     "smoke:local": "pnpm --filter @agent-vault/server smoke:local",
     "smoke:sync": "pnpm --filter @agent-vault/sync smoke",
     "smoke:mac-sync": "pnpm --filter @agent-vault/mac-sync smoke",
-    "dev:server": "pnpm --filter @agent-vault/server dev"
+    "smoke:web": "pnpm --filter @agent-vault/web smoke",
+    "dev:server": "pnpm --filter @agent-vault/server dev",
+    "dev:web": "pnpm --filter @agent-vault/web dev"
   },
   "devDependencies": {
     "@types/node": "^25.0.0",
