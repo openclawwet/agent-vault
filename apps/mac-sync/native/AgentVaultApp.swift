@@ -48,6 +48,27 @@ private struct VaultFlow: Decodable {
     let bytes: Int
 }
 
+final class DragHandleView: NSView {
+    override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, alphaValue > 0.01, bounds.contains(point) else { return nil }
+
+        let trafficAndAddButtonZone = NSRect(x: 0, y: 0, width: 138, height: bounds.height)
+        let topActionZone = NSRect(x: max(0, bounds.width - 220), y: 0, width: 220, height: bounds.height)
+        if trafficAndAddButtonZone.contains(point) || topActionZone.contains(point) {
+            return nil
+        }
+
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var webView: WKWebView?
@@ -136,11 +157,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         materialView.autoresizingMask = [.width, .height]
         materialView.addSubview(webView)
         webView.translatesAutoresizingMaskIntoConstraints = false
+
+        let dragHandle = DragHandleView()
+        dragHandle.translatesAutoresizingMaskIntoConstraints = false
+        dragHandle.wantsLayer = true
+        dragHandle.layer?.backgroundColor = NSColor.clear.cgColor
+        materialView.addSubview(dragHandle)
+
         NSLayoutConstraint.activate([
             webView.leadingAnchor.constraint(equalTo: materialView.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: materialView.trailingAnchor),
             webView.topAnchor.constraint(equalTo: materialView.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: materialView.bottomAnchor)
+            webView.bottomAnchor.constraint(equalTo: materialView.bottomAnchor),
+            dragHandle.leadingAnchor.constraint(equalTo: materialView.leadingAnchor),
+            dragHandle.trailingAnchor.constraint(equalTo: materialView.trailingAnchor),
+            dragHandle.topAnchor.constraint(equalTo: materialView.topAnchor),
+            dragHandle.heightAnchor.constraint(equalToConstant: 64)
         ])
 
         window.contentView = materialView

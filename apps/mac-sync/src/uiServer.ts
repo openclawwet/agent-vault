@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ChangeEventRecord, DeviceStatusRecord, VaultFileRecord, VaultServerStatus } from "@agent-vault/core";
+import type { ChangeEventRecord, DeviceStatusRecord, SpaceAccessInfo, VaultFileRecord, VaultServerStatus } from "@agent-vault/core";
 import type { MacSyncConfig } from "./config.js";
 import { configWithShareIgnores, syncAllSources, summaryChanged } from "./autoSync.js";
 import { readActivity, recordActivity } from "./activityLog.js";
@@ -195,6 +195,19 @@ function fallbackServerStatus(): VaultServerStatus {
   };
 }
 
+function ensureCurrentDevice(
+  devices: DeviceStatusRecord[],
+  currentDeviceId: string,
+  fallback: DeviceStatusRecord,
+): DeviceStatusRecord[] {
+  const normalized = devices.map((device) => ({
+    ...device,
+    current: device.current || device.id === currentDeviceId,
+  }));
+  if (normalized.some((device) => device.id === fallback.id)) return normalized;
+  return [fallback, ...normalized];
+}
+
 async function connectedDevices(vault: VaultClient): Promise<{
   server: VaultServerStatus;
   devices: DeviceStatusRecord[];
@@ -203,20 +216,6 @@ async function connectedDevices(vault: VaultClient): Promise<{
   adminVisible: boolean;
 }> {
   const me = await vault.me();
-  try {
-    const status = await vault.deviceStatus();
-    return {
-      server: status.server,
-      devices: status.devices,
-      currentDeviceId: status.currentDeviceId,
-      presenceVisible: true,
-      adminVisible: true,
-    };
-  } catch {
-    // Older live Vault servers do not have presence yet. Still show the Mac Mini server,
-    // because reaching /me already proves the server side is online.
-  }
-
   const self: DeviceStatusRecord = {
     ...me.device,
     status: "online",
@@ -227,17 +226,35 @@ async function connectedDevices(vault: VaultClient): Promise<{
     current: true,
   };
   try {
+    const status = await vault.deviceStatus();
+    return {
+      server: status.server,
+      devices: ensureCurrentDevice(status.devices, status.currentDeviceId, self),
+      currentDeviceId: status.currentDeviceId,
+      presenceVisible: true,
+      adminVisible: true,
+    };
+  } catch {
+    // Older live Vault servers do not have presence yet. Still show the Mac Mini server,
+    // because reaching /me already proves the server side is online.
+  }
+
+  try {
     return {
       server: fallbackServerStatus(),
-      devices: (await vault.listDevices()).map((device) => ({
-        ...device,
-        status: device.id === me.device.id ? "online" : "offline",
-        lastSeenAt: device.id === me.device.id ? new Date().toISOString() : null,
-        clientName: device.id === me.device.id ? "mac-sync" : null,
-        clientVersion: null,
-        hostName: null,
-        current: device.id === me.device.id,
-      })),
+      devices: ensureCurrentDevice(
+        (await vault.listDevices()).map((device) => ({
+          ...device,
+          status: device.id === me.device.id ? "online" : "offline",
+          lastSeenAt: device.id === me.device.id ? new Date().toISOString() : null,
+          clientName: device.id === me.device.id ? "mac-sync" : null,
+          clientVersion: null,
+          hostName: null,
+          current: device.id === me.device.id,
+        })),
+        me.device.id,
+        self,
+      ),
       currentDeviceId: me.device.id,
       presenceVisible: false,
       adminVisible: true,
@@ -257,8 +274,19 @@ async function buildSummary(config: MacSyncConfig) {
   const vault = new VaultClient(config.serverUrl, config.token);
   const shareConfig = await loadShareConfig();
   const mainConfig = configWithShareIgnores(config, shareConfig.shares);
-  const [spaces, mainStatus, activity, deviceSummary] = await Promise.all([
-    vault.listSpaces(),
+  const fallbackSpace: SpaceAccessInfo = {
+    name: config.space,
+    createdAt: new Date().toISOString(),
+    permissions: [],
+  };
+  const [spacesResult, mainStatus, activity, deviceSummary] = await Promise.all([
+    vault.listSpaces().then(
+      (spaces) => ({ spaces, error: null as string | null }),
+      (error: unknown) => ({
+        spaces: [fallbackSpace],
+        error: error instanceof Error ? error.message : "Vault connection failed.",
+      }),
+    ),
     statusCommand(mainConfig).catch((error: unknown) => ({ actions: [], error: error instanceof Error ? error.message : "Status failed." })),
     readActivity(),
     connectedDevices(vault).catch(() => ({
@@ -269,6 +297,7 @@ async function buildSummary(config: MacSyncConfig) {
       adminVisible: false,
     })),
   ]);
+  const spaces = spacesResult.spaces;
   const localShares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share)));
   const remoteSpaces = await Promise.all(
     spaces.map(async (space) => {
@@ -328,6 +357,7 @@ async function buildSummary(config: MacSyncConfig) {
     currentDeviceId: deviceSummary.currentDeviceId,
     devicesPresenceVisible: deviceSummary.presenceVisible,
     devicesAdminVisible: deviceSummary.adminVisible,
+    connectionError: spacesResult.error,
     flowStats: flowStats(recentChanges, remoteFiles),
     recentChanges,
     activity,
@@ -1446,7 +1476,9 @@ function renderHtml(): string {
       function render() {
         const summary = state.summary;
         const totalPending = summary.mainPendingActions + summary.shares.reduce((sum, share) => sum + share.pendingActions, 0);
-        $("connection").textContent = summary.server.name + " / " + summary.defaultSpace + " / autosync";
+        const serverName = summary.server?.name || "Mac Mini Vault Server";
+        const serverStatus = summary.server?.status || "online";
+        $("connection").textContent = serverName + " / " + summary.defaultSpace + " / autosync";
         $("pending").textContent = totalPending + " pending";
         $("deviceScope").textContent = summary.devicesPresenceVisible ? "presence" : "local";
         $("shareCount").textContent = summary.shares.length + (summary.shares.length === 1 ? " source" : " sources") + " / autosync on";
@@ -1470,7 +1502,7 @@ function renderHtml(): string {
           '</article>'
         ).join("") : '<div class="source empty">Press + to add a folder. Drop files or folders anywhere in this window for quick uploads.</div>';
         const serverRow = '<div class="device server-device">' +
-          '<div class="device-name"><span class="device-status"><span class="status-dot online"></span>' + esc(summary.server.name) + '</span></div>' +
+          '<div class="device-name"><span class="device-status"><span class="status-dot ' + esc(serverStatus) + '"></span>' + esc(serverName) + '</span></div>' +
           '<div class="device-meta">server</div>' +
         '</div>';
         const deviceRows = summary.devices.length ? summary.devices.slice(0, 6).map((device) => {
@@ -1484,7 +1516,7 @@ function renderHtml(): string {
             '</div>' +
             '<div class="device-meta">' + status + '<br />' + scopeCount + ' spaces</div>' +
           '</div>';
-        }).join("") : '<div class="empty-note">No client data.</div>';
+        }).join("") : '<div class="empty-note">' + (summary.connectionError ? 'Client status is reconnecting.' : 'No client data.') + '</div>';
         $("devices").innerHTML = serverRow + deviceRows;
         $("flow").innerHTML = summary.flowStats.map((stat) =>
           '<div class="stat-row">' +
@@ -1520,6 +1552,23 @@ function renderHtml(): string {
         );
         $("activity").innerHTML = remoteLog.concat(localLog).join("") || '<div class="empty-note">No activity yet.</div>';
         renderSchema();
+      }
+
+      function renderOffline(message) {
+        $("connection").textContent = "Mac Mini Vault Server / reconnecting";
+        $("pending").textContent = "0 pending";
+        $("deviceScope").textContent = "local";
+        $("shareCount").textContent = "status unavailable";
+        $("shares").innerHTML = '<div class="source empty">Agent Vault is reconnecting. Shared folders stay configured locally.</div>';
+        $("devices").innerHTML =
+          '<div class="device server-device">' +
+            '<div class="device-name"><span class="device-status"><span class="status-dot recent"></span>Mac Mini Vault Server</span></div>' +
+            '<div class="device-meta">server</div>' +
+          '</div>' +
+          '<div class="empty-note">' + esc(message || "Status unavailable.") + '</div>';
+        $("flow").innerHTML = "";
+        $("structure").innerHTML = '<div class="empty-note">Waiting for Vault status.</div>';
+        $("activity").innerHTML = '<div class="empty-note">No live log while reconnecting.</div>';
       }
 
       function schemaNode(id, kind, title, meta, x, y, extra = "") {
@@ -1744,7 +1793,10 @@ function renderHtml(): string {
         state.schema.dragging = false;
       });
 
-      refresh().catch((error) => toast(error.message));
+      refresh().catch((error) => {
+        renderOffline(error.message);
+        toast(error.message);
+      });
     </script>
   </body>
 </html>`;
