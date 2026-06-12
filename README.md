@@ -59,6 +59,24 @@ curl -X POST \
 
 Device tokens are stored hashed in SQLite and returned only once when created or rotated.
 
+## Mac sync CLI
+
+```bash
+pnpm --filter @agent-vault/mac-sync build
+pnpm --filter @agent-vault/mac-sync exec agent-vault-sync init \
+  --server http://127.0.0.1:3474 \
+  --token "$(cat ~/.agent-vault/dev-token)" \
+  --dir ~/AgentVault \
+  --space Inbox
+
+pnpm --filter @agent-vault/mac-sync exec agent-vault-sync status
+pnpm --filter @agent-vault/mac-sync exec agent-vault-sync push
+pnpm --filter @agent-vault/mac-sync exec agent-vault-sync pull
+pnpm --filter @agent-vault/mac-sync exec agent-vault-sync watch
+```
+
+The CLI keeps sync metadata under `.agent-vault` inside the selected folder and writes conflict review files there instead of overwriting divergent edits.
+
 ## Configuration
 
 ```bash

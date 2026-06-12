@@ -15,6 +15,18 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  apps/mac-sync:
+    dependencies:
+      '@agent-vault/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@agent-vault/server':
+        specifier: workspace:*
+        version: link:../server
+      '@agent-vault/sync':
+        specifier: workspace:*
+        version: link:../../packages/sync
+
   apps/server:
     dependencies:
       '@agent-vault/core':
@@ -27,6 +39,12 @@ importers:
   packages/core: {}
 
   packages/storage:
+    dependencies:
+      '@agent-vault/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/sync:
     dependencies:
       '@agent-vault/core':
         specifier: workspace:*
