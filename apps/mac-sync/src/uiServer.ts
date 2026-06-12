@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { ChangeEventRecord, DeviceStatusRecord, SpaceAccessInfo, VaultFileRecord, VaultServerStatus } from "@agent-vault/core";
 import type { MacSyncConfig } from "./config.js";
@@ -102,6 +103,11 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 
 function openPath(targetPath: string): void {
   const child = spawn("open", [targetPath], { stdio: "ignore", detached: true });
+  child.unref();
+}
+
+function revealPath(targetPath: string): void {
+  const child = spawn("open", ["-R", targetPath], { stdio: "ignore", detached: true });
   child.unref();
 }
 
@@ -644,6 +650,50 @@ function safeRelativeFolder(value: string): string {
   return parts.join("/");
 }
 
+function safeRemoteFilePath(value: string): string {
+  const cleaned = value.replaceAll("\\", "/").trim();
+  const parts = cleaned
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === ".." || part.includes("\0"))) {
+    throw new UiError(400, "invalid_file_path", "File path is invalid.");
+  }
+  return parts.join("/");
+}
+
+function safeDownloadSpace(value: string): string {
+  const cleaned = value.trim();
+  if (!cleaned || cleaned.includes("/") || cleaned.includes("\\") || cleaned.includes("\0") || cleaned === "." || cleaned === "..") {
+    throw new UiError(400, "invalid_space", "Vault space is invalid.");
+  }
+  return cleaned;
+}
+
+function downloadRoot(): string {
+  return process.env.AGENT_VAULT_DOWNLOAD_DIR ?? path.join(os.homedir(), ".agent-vault", "downloads");
+}
+
+async function downloadRemoteFile(config: MacSyncConfig, input: Record<string, unknown>) {
+  const space = safeDownloadSpace(String(input.space ?? config.space));
+  const filePath = safeRemoteFilePath(String(input.path ?? ""));
+  const body = await new VaultClient(config.serverUrl, config.token).download(space, filePath);
+  const targetPath = path.join(downloadRoot(), space, ...filePath.split("/"));
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, body);
+  if (input.reveal !== false) {
+    revealPath(targetPath);
+  }
+  remoteSnapshot = null;
+  await recordActivity("file_download", `Downloaded ${filePath}`, {
+    space,
+    path: filePath,
+    size: body.byteLength,
+    targetPath,
+  });
+  return { space, path: filePath, size: body.byteLength, targetPath };
+}
+
 async function createFolderMarker(config: MacSyncConfig, share: ShareRecord, folderName: string) {
   const folder = safeRelativeFolder(folderName);
   const targetDir = path.join(share.localDir, ...folder.split("/"));
@@ -763,6 +813,12 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
     }
     openPath(folderPath);
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (method === "POST" && route.join("/") === "api/download-remote") {
+    const body = await readJson(req);
+    sendJson(res, 200, { download: await downloadRemoteFile(config, body) });
     return;
   }
 
@@ -1519,6 +1575,17 @@ function renderHtml(): string {
         color: rgba(237, 230, 218, 0.52);
         font-size: 11px;
       }
+      .tree-row.file-row {
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        cursor: pointer;
+        border-radius: 7px;
+        padding-right: 5px;
+        transition: color 140ms ease, background 140ms ease;
+      }
+      .tree-row.file-row:hover {
+        color: rgba(237, 230, 218, 0.78);
+        background: rgba(237, 230, 218, 0.045);
+      }
       .tree-name {
         min-width: 0;
         overflow: hidden;
@@ -1529,6 +1596,23 @@ function renderHtml(): string {
         color: var(--faint);
         font-size: 10px;
         white-space: nowrap;
+      }
+      .tree-download {
+        border: 0;
+        padding: 0;
+        color: rgba(237, 230, 218, 0.34);
+        background: transparent;
+        cursor: pointer;
+        font-size: 10.5px;
+        opacity: 0;
+        transition: color 140ms ease, opacity 140ms ease;
+      }
+      .tree-row.file-row:hover .tree-download,
+      .tree-download:focus-visible {
+        opacity: 1;
+      }
+      .tree-download:hover {
+        color: rgba(237, 230, 218, 0.86);
       }
       .side-head {
         display: flex;
@@ -1976,6 +2060,7 @@ function renderHtml(): string {
         if (name === "folder") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2.7 5.4h10.6v7.1H2.7z"/><path d="M3.8 5.4V3.8h3l1.1 1.6"/></svg></span>';
         if (name === "sync") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M12.5 5.2A4.7 4.7 0 0 0 4 3.9"/><path d="M4 2.2v1.7h1.7"/><path d="M3.5 10.8a4.7 4.7 0 0 0 8.5 1.3"/><path d="M12 13.8v-1.7h-1.7"/></svg></span>';
         if (name === "remove") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></span>';
+        if (name === "download") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 3.2v7.1"/><path d="M5.2 7.6 8 10.4l2.8-2.8"/><path d="M3.6 12.8h8.8"/></svg></span>';
         return "";
       };
       const shortPath = (value) => {
@@ -2113,7 +2198,13 @@ function renderHtml(): string {
         renderSchema();
       }
 
-      function renderTreeNodes(nodes, depth = 0) {
+      function remotePathForNode(source, nodePath) {
+        const prefix = String(source?.remotePathPrefix || "").replace(/^\/+|\/+$/g, "");
+        const cleanPath = String(nodePath || "").replace(/^\/+/, "");
+        return prefix ? prefix + "/" + cleanPath : cleanPath;
+      }
+
+      function renderTreeNodes(nodes, source, depth = 0) {
         if (!nodes?.length) return '<div class="empty-note">No files in this source yet.</div>';
         return nodes.map((node) => {
           const metric = node.kind === "folder" ? node.count + " / " + fmtSize(node.size) : fmtSize(node.size);
@@ -2121,10 +2212,15 @@ function renderHtml(): string {
             const open = depth < 1 ? " open" : "";
             return '<details' + open + '>' +
               '<summary><span class="tree-name">' + esc(node.name) + '</span><span class="tree-metric">' + metric + '</span></summary>' +
-              renderTreeNodes(node.children || [], depth + 1) +
+              renderTreeNodes(node.children || [], source, depth + 1) +
             '</details>';
           }
-          return '<div class="tree-row"><span class="tree-name">' + esc(node.name) + '</span><span class="tree-metric">' + metric + '</span></div>';
+          const remotePath = source ? remotePathForNode(source, node.path) : node.path;
+          return '<div class="tree-row file-row" data-download-space="' + esc(source?.space || "") + '" data-download-path="' + esc(remotePath) + '" title="Download ' + esc(remotePath) + '">' +
+            '<span class="tree-name">' + esc(node.name) + '</span>' +
+            '<span class="tree-metric">' + metric + '</span>' +
+            '<button class="tree-download" type="button" data-download-space="' + esc(source?.space || "") + '" data-download-path="' + esc(remotePath) + '">' + iconSvg("download") + 'download</button>' +
+          '</div>';
         }).join("");
       }
 
@@ -2151,7 +2247,7 @@ function renderHtml(): string {
         ].map(([mode, label]) =>
           '<button class="access-button ' + (source.access === mode ? "active" : "") + '" data-access="' + mode + '" data-share-id="' + esc(source.id) + '">' + label + '</button>'
         ).join("") : '<span class="access-chip readonly">read only</span>';
-        $("treeList").innerHTML = renderTreeNodes(tree || []);
+        $("treeList").innerHTML = renderTreeNodes(tree || [], source);
       }
 
       function renderOffline(message) {
@@ -2331,6 +2427,23 @@ function renderHtml(): string {
       });
       document.addEventListener("click", async (event) => {
         const target = event.target instanceof HTMLElement ? event.target : null;
+        const downloadNode = target?.closest?.("[data-download-path]");
+        if (downloadNode?.dataset?.downloadPath) {
+          event.preventDefault();
+          event.stopPropagation();
+          toast("Downloading file");
+          const result = await api("/api/download-remote", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              space: downloadNode.dataset.downloadSpace,
+              path: downloadNode.dataset.downloadPath
+            })
+          });
+          await refresh();
+          toast("Downloaded " + shortPath(result.download?.targetPath || downloadNode.dataset.downloadPath));
+          return;
+        }
         const sourceNode = target?.closest?.("[data-select-source]");
         const selectedId = target?.dataset?.selectSource || sourceNode?.dataset?.selectSource;
         if (selectedId) {

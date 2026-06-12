@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { startAgentVaultServer } from "@agent-vault/server";
@@ -17,6 +17,7 @@ async function expectJson(response: Response): Promise<Record<string, unknown>> 
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-vault-ui-"));
 process.env.AGENT_VAULT_SHARES_CONFIG = path.join(tempRoot, "shares.json");
 process.env.AGENT_VAULT_ACTIVITY_LOG = path.join(tempRoot, "activity.jsonl");
+process.env.AGENT_VAULT_DOWNLOAD_DIR = path.join(tempRoot, "downloads");
 
 const token = `ui-${randomBytes(16).toString("hex")}`;
 const startedVault = await startAgentVaultServer({
@@ -57,6 +58,7 @@ try {
   assert(html.includes('id="treeSection"'), "desktop UI HTML missing tree inspector");
   assert(html.includes('data-side-mode="tree"'), "desktop UI HTML missing tree/system switch");
   assert(html.includes('data-access'), "desktop UI HTML missing permission controls");
+  assert(html.includes("data-download-path"), "desktop UI HTML missing file download action");
   assert(!html.includes('id="openFolder"'), "desktop UI should not render the old top open button");
   assert(!html.includes("dropzone"), "desktop UI should not render the old dropzone");
 
@@ -92,6 +94,18 @@ try {
   const filesJson = await expectJson(files);
   const listed = filesJson.files as Array<{ path: string }> | undefined;
   assert(listed?.some((file) => file.path === "Client Docs/brief.txt"), "shared file was not uploaded under prefix on add");
+
+  const download = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/download-remote`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ space: "MacBook Shared", path: "Client Docs/brief.txt", reveal: false }),
+  });
+  assert(download.status === 200, `remote file download failed with ${download.status}`);
+  const downloadJson = await expectJson(download);
+  const downloaded = downloadJson.download as { targetPath?: string; size?: number } | undefined;
+  assert(downloaded?.targetPath, "download target path missing");
+  assert(downloaded.size === "client brief\n".length, "downloaded size mismatch");
+  assert((await readFile(downloaded.targetPath, "utf8")) === "client brief\n", "downloaded file content mismatch");
 
   const folder = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares/${share.id}/folders`, {
     method: "POST",
