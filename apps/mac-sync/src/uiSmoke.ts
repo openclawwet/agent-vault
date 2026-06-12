@@ -55,20 +55,25 @@ try {
   assert(html.includes("dropSurface"), "desktop UI HTML missing global drop surface");
   assert(html.includes('id="devices"'), "desktop UI HTML missing devices section");
   assert(html.includes('id="flow"'), "desktop UI HTML missing flow section");
-  assert(html.includes('id="treeSection"'), "desktop UI HTML missing tree inspector");
   assert(html.includes('id="folderBrowser"'), "desktop UI HTML missing Finder-style folder browser");
   assert(html.includes('data-view-mode="grid"'), "desktop UI HTML missing icon view mode");
   assert(html.includes('data-view-mode="large"'), "desktop UI HTML missing large icon view mode");
   assert(html.includes('data-view-mode="list"'), "desktop UI HTML missing list view mode");
+  assert(html.includes('data-device-filter="macbook"'), "desktop UI HTML missing MacBook filter");
+  assert(html.includes('data-device-filter="mac-mini"'), "desktop UI HTML missing Mac Mini filter");
+  assert(html.includes('data-detail-toggle="true"'), "desktop UI HTML missing details toggle");
   assert(html.includes('id="folderNew"'), "desktop UI HTML missing in-folder create action");
   assert(html.includes("/api/folder-entries"), "desktop UI HTML missing lazy folder entries endpoint");
   assert(html.includes('data-file-action="open"'), "desktop UI HTML missing file open action");
   assert(html.includes('data-file-action="download"'), "desktop UI HTML missing file download action");
   assert(html.includes("activateFolderEntry"), "desktop UI HTML missing Finder-style entry activation");
-  assert(html.includes('data-side-mode="tree"'), "desktop UI HTML missing tree/system switch");
-  assert(html.includes('data-access'), "desktop UI HTML missing permission controls");
+  assert(html.includes('data-source-device'), "desktop UI HTML missing source device marking");
   assert(html.includes("data-download-path"), "desktop UI HTML missing file download action");
   assert(html.includes("DownloadURL"), "desktop UI HTML missing drag-out download payload");
+  assert(!html.includes('id="treeSection"'), "desktop UI should not render a separate tree inspector");
+  assert(!html.includes('data-side-mode'), "desktop UI should not render a tree/system switch");
+  assert(!html.includes('id="shares"'), "desktop UI should not render a separate source column");
+  assert(!html.includes('class="side"'), "desktop UI should not render a side panel beside the Finder grid");
   assert(!html.includes('id="openFolder"'), "desktop UI should not render the old top open button");
   assert(!html.includes("dropzone"), "desktop UI should not render the old dropzone");
 

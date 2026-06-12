@@ -1339,7 +1339,7 @@ function renderHtml(): string {
         display: flex;
       }
       .vault-view {
-        gap: clamp(26px, 4.6vw, 72px);
+        gap: 0;
       }
       .stage {
         position: relative;
@@ -1370,8 +1370,8 @@ function renderHtml(): string {
         min-height: 390px;
         margin-top: 31px;
         display: grid;
-        grid-template-columns: minmax(230px, 0.34fr) minmax(0, 1fr);
-        gap: clamp(18px, 3vw, 34px);
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
         overflow: hidden;
       }
       .source-field {
@@ -1560,6 +1560,7 @@ function renderHtml(): string {
       }
       .folder-browser__tools,
       .view-toggle,
+      .device-toggle,
       .folder-browser__crumbs {
         display: flex;
         align-items: center;
@@ -1574,10 +1575,21 @@ function renderHtml(): string {
         border-radius: 999px;
         background: rgba(22, 22, 20, 0.22);
       }
+      .device-toggle {
+        max-width: min(430px, 48vw);
+        min-width: 0;
+        overflow: auto hidden;
+        padding: 3px;
+        border: 1px solid rgba(237, 230, 218, 0.08);
+        border-radius: 999px;
+        background: rgba(22, 22, 20, 0.18);
+      }
       .view-toggle button,
+      .device-toggle button,
       .crumb-button,
       .up-button,
-      .folder-create-button {
+      .folder-create-button,
+      .details-toggle {
         border: 0;
         color: rgba(237, 230, 218, 0.48);
         background: transparent;
@@ -1592,14 +1604,26 @@ function renderHtml(): string {
         place-items: center;
         padding: 0;
       }
-      .view-toggle button.active {
+      .device-toggle button,
+      .details-toggle {
+        min-height: 22px;
+        border-radius: 999px;
+        padding: 0 9px;
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+      .view-toggle button.active,
+      .device-toggle button.active,
+      .details-toggle.active {
         color: rgba(237, 230, 218, 0.88);
         background: rgba(237, 230, 218, 0.08);
       }
       .view-toggle button:hover,
+      .device-toggle button:hover,
       .crumb-button:hover,
       .up-button:hover,
-      .folder-create-button:hover {
+      .folder-create-button:hover,
+      .details-toggle:hover {
         color: rgba(237, 230, 218, 0.84);
       }
       .view-glyph {
@@ -1651,6 +1675,27 @@ function renderHtml(): string {
         white-space: nowrap;
         color: var(--faint);
         font-size: 11px;
+      }
+      .folder-browser__path-icon {
+        width: 18px;
+        height: 14px;
+        flex: 0 0 auto;
+        border: 1px solid rgba(237, 230, 218, 0.18);
+        border-radius: 4px;
+        background: rgba(237, 230, 218, 0.07);
+        position: relative;
+      }
+      .folder-browser__path-icon::before {
+        content: "";
+        position: absolute;
+        left: 3px;
+        top: -4px;
+        width: 8px;
+        height: 5px;
+        border: 1px solid rgba(237, 230, 218, 0.15);
+        border-bottom: 0;
+        border-radius: 3px 3px 0 0;
+        background: rgba(237, 230, 218, 0.06);
       }
       .crumb-button,
       .up-button,
@@ -1726,6 +1771,18 @@ function renderHtml(): string {
         color: rgba(237, 230, 218, 0.9);
         background: rgba(237, 230, 218, 0.055);
         border-color: rgba(237, 230, 218, 0.08);
+      }
+      .folder-item.source {
+        cursor: pointer;
+      }
+      .folder-item.source[data-source-device="mac-mini"] {
+        border-top-color: rgba(237, 230, 218, 0.22);
+      }
+      .folder-item.source[data-source-device="macbook"] {
+        border-top-color: rgba(208, 194, 170, 0.24);
+      }
+      .folder-item.source[data-source-device="vault"] {
+        border-top-color: rgba(180, 200, 162, 0.2);
       }
       .folder-item:active {
         transform: translateY(1px);
@@ -1836,6 +1893,11 @@ function renderHtml(): string {
       .folder-item__kind {
         text-transform: lowercase;
       }
+      .folder-item__device {
+        color: rgba(237, 230, 218, 0.42);
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
       .folder-item__actions {
         display: inline-flex;
         align-items: center;
@@ -1871,6 +1933,19 @@ function renderHtml(): string {
       }
       .folder-item.list .folder-item__actions {
         opacity: 1;
+      }
+      .folder-items:not(.show-details) .folder-item__kind,
+      .folder-items:not(.show-details) .folder-item__meta,
+      .folder-items:not(.show-details) .folder-item__device,
+      .folder-items:not(.show-details) .folder-item__actions {
+        display: none;
+      }
+      .folder-items:not(.show-details) .folder-item.grid,
+      .folder-items:not(.show-details) .folder-item.large {
+        grid-template-rows: auto minmax(0, auto);
+      }
+      .folder-items:not(.show-details) .folder-item.list {
+        grid-template-columns: 28px minmax(0, 1fr);
       }
       .folder-empty {
         min-height: 100%;
@@ -2348,15 +2423,12 @@ function renderHtml(): string {
         .vault-view {
           flex-direction: column;
         }
-        .side {
-          flex-basis: auto;
-        }
         .system-sections {
           grid-template-columns: 1fr 1fr;
           grid-template-rows: minmax(260px, auto);
         }
         .file-workspace {
-          grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
+          grid-template-columns: minmax(0, 1fr);
           min-height: 520px;
         }
         .source {
@@ -2397,6 +2469,10 @@ function renderHtml(): string {
         }
         .folder-browser__tools {
           justify-content: flex-start;
+          flex-wrap: wrap;
+        }
+        .device-toggle {
+          max-width: 100%;
         }
         .schema-head {
           align-items: flex-start;
@@ -2432,18 +2508,22 @@ function renderHtml(): string {
             <p class="micro-kicker">shared sources</p>
             <div class="stage-meta" id="shareCount">0 sources</div>
             <div class="file-workspace" id="dropSurface">
-              <div class="source-field">
-                <div class="source-cluster" id="shares"></div>
-              </div>
               <section class="folder-browser" id="folderBrowser" aria-label="Folder contents">
                 <div class="folder-browser__head">
                   <div>
-                    <h2 class="folder-browser__title" id="folderTitle">Select a source</h2>
-                    <div class="folder-browser__meta" id="folderMeta">Double-click folders to open them.</div>
+                    <h2 class="folder-browser__title" id="folderTitle">Geteilte Ordner</h2>
+                    <div class="folder-browser__meta" id="folderMeta">Agent Vault / Geteilte Ordner</div>
                   </div>
                   <div class="folder-browser__tools">
+                    <div class="device-toggle" aria-label="Device filter">
+                      <button type="button" data-device-filter="all" class="active">Alle</button>
+                      <button type="button" data-device-filter="macbook">MacBook</button>
+                      <button type="button" data-device-filter="mac-mini">Mac Mini</button>
+                      <button type="button" data-device-filter="vault">Vault</button>
+                    </div>
                     <button class="folder-create-button" id="folderNew" type="button">new folder</button>
                     <button class="up-button" id="folderUp" type="button">up</button>
+                    <button class="details-toggle" id="detailsToggle" type="button" data-detail-toggle="true">details</button>
                     <div class="view-toggle" aria-label="View mode">
                       <button type="button" data-view-mode="grid" class="active" title="Icon view" aria-label="Icon view"><span class="view-glyph grid" aria-hidden="true"></span></button>
                       <button type="button" data-view-mode="large" title="Large icon view" aria-label="Large icon view"><span class="view-glyph large" aria-hidden="true"></span></button>
@@ -2460,45 +2540,14 @@ function renderHtml(): string {
               <button class="quiet-submit" type="submit">add</button>
             </form>
           </section>
-          <aside class="side">
-            <div class="inspector-switch hidden" id="inspectorSwitch">
-              <button class="switch-button active" data-side-mode="tree">tree</button>
-              <button class="switch-button" data-side-mode="system">system</button>
-            </div>
-            <section class="tree-section hidden" id="treeSection">
-              <div class="selected-source-head" id="selectedSource"></div>
-              <div class="access-controls" id="accessControls"></div>
-              <div class="tree-list" id="treeList"></div>
-            </section>
-            <div class="system-sections" id="systemSections">
-              <section class="side-section">
-                <div class="side-head">
-                  <h2 class="side-title">devices</h2>
-                  <span class="status-pill" id="deviceScope">local</span>
-                </div>
-                <div class="side-body" id="devices"></div>
-              </section>
-              <section class="side-section">
-                <div class="side-head">
-                  <h2 class="side-title">flow</h2>
-                  <span class="status-pill" id="pending">0 pending</span>
-                </div>
-                <div class="side-body" id="flow"></div>
-              </section>
-              <section class="side-section">
-                <div class="side-head">
-                  <h2 class="side-title">structure</h2>
-                </div>
-                <div class="side-body" id="structure"></div>
-              </section>
-              <section class="side-section">
-                <div class="side-head">
-                  <h2 class="side-title">log</h2>
-                </div>
-                <div class="side-body" id="activity"></div>
-              </section>
-            </div>
-          </aside>
+          <div class="system-cache hidden" aria-hidden="true">
+            <span id="pending">0 pending</span>
+            <span id="deviceScope">local</span>
+            <div id="devices"></div>
+            <div id="flow"></div>
+            <div id="structure"></div>
+            <div id="activity"></div>
+          </div>
         </section>
         <section class="view schema-view" id="view-schema">
           <header class="schema-head">
@@ -2527,8 +2576,9 @@ function renderHtml(): string {
         summary: null,
         view: "vault",
         selectedSourceId: null,
-        sideMode: "system",
         viewMode: "grid",
+        deviceFilter: "all",
+        showDetails: false,
         folderBySource: {},
         folderEntriesByKey: {},
         folderLoadingByKey: {},
@@ -2596,12 +2646,29 @@ function renderHtml(): string {
         const summary = state.summary;
         if (!summary) return [];
         return [
-          ...summary.shares.map((share) => ({ ...share, sourceKind: "local", sourceId: "local:" + share.id })),
-          ...(summary.remoteSources || []).map((source) => ({ ...source, sourceKind: "remote", sourceId: source.id }))
+          ...summary.shares.map((share) => ({
+            ...share,
+            sourceKind: "local",
+            sourceId: "local:" + share.id,
+            deviceKind: "macbook",
+            deviceLabel: "MacBook"
+          })),
+          ...(summary.remoteSources || []).map((source) => ({
+            ...source,
+            sourceKind: "remote",
+            sourceId: source.id,
+            deviceKind: source.origin === "Mac Mini" ? "mac-mini" : "vault",
+            deviceLabel: source.origin || "Vault"
+          }))
         ];
       };
 
+      const visibleSources = () => {
+        const sources = allSources();
+        return state.deviceFilter === "all" ? sources : sources.filter((source) => source.deviceKind === state.deviceFilter);
+      };
       const selectedSource = () => allSources().find((source) => source.sourceId === state.selectedSourceId) || null;
+      const sourceVisible = (source) => Boolean(source && (state.deviceFilter === "all" || source.deviceKind === state.deviceFilter));
       const sourceTree = (source) => {
         if (!source) return [];
         if (source.sourceKind === "local") return source.remoteTree?.length ? source.remoteTree : source.localTree || [];
@@ -2712,7 +2779,9 @@ function renderHtml(): string {
         }
         if (state.selectedSourceId && !allSources().some((source) => source.sourceId === state.selectedSourceId)) {
           state.selectedSourceId = null;
-          state.sideMode = "system";
+        }
+        if (state.selectedSourceId && !sourceVisible(selectedSource())) {
+          state.selectedSourceId = null;
         }
         render();
       }
@@ -2734,37 +2803,8 @@ function renderHtml(): string {
         $("pending").textContent = summary.remoteIndexing ? "indexing" : totalPending + " pending";
         $("deviceScope").textContent = summary.devicesPresenceVisible ? "presence" : "local";
         const sources = allSources();
-        $("shareCount").textContent = sources.length + (sources.length === 1 ? " source" : " sources") + (summary.remoteIndexing ? " / indexing vault" : " / autosync on");
-        $("shares").innerHTML = sources.length ? sources.map((source) => {
-          const isLocal = source.sourceKind === "local";
-          const selected = source.sourceId === state.selectedSourceId;
-          const pathText = isLocal ? source.localDir : source.origin + " / " + source.remotePathPrefix;
-          const localText = isLocal
-            ? (source.available ? fileLabel(source.localFileCount) + " / " + fmtSize(source.localSize) : "offline")
-            : "remote";
-          const pendingText = isLocal ? (source.pendingActions ? source.pendingActions + " pending" : "synced") : "readable";
-          const actions = isLocal
-            ? '<button class="source-action" data-open="' + esc(source.localDir) + '">' + iconSvg("open") + 'open</button>' +
-              '<button class="source-action" data-folder="' + esc(source.id) + '">' + iconSvg("folder") + 'folder</button>' +
-              '<button class="source-action" data-sync="' + esc(source.id) + '">' + iconSvg("sync") + 'sync</button>' +
-              '<button class="source-action danger" data-remove="' + esc(source.id) + '">' + iconSvg("remove") + 'remove</button>'
-            : '<button class="source-action" data-select-source="' + esc(source.sourceId) + '">' + iconSvg("folder") + 'tree</button>';
-          return '<article class="source ' + (selected ? "selected" : "") + '" data-select-source="' + esc(source.sourceId) + '">' +
-            '<span class="folder-mark" aria-hidden="true"></span>' +
-            '<div class="source-title">' + esc(source.label) + '</div>' +
-            '<div class="source-path" title="' + esc(pathText) + '">' + esc(shortPath(pathText)) + '</div>' +
-            '<div class="source-line">' +
-              '<span class="access-chip ' + esc(source.access) + '" title="' + esc(accessHint(source.access)) + '">' + esc(accessLabel(source.access)) + '</span>' +
-              '<span>' + localText + '</span>' +
-              '<span>/</span>' +
-              '<span>' + source.remoteFileCount + ' remote / ' + fmtSize(source.remoteSize) + '</span>' +
-              '<span>/</span>' +
-              '<span>' + (source.pendingChecked === false ? "sync check deferred" : pendingText) + '</span>' +
-              '<span>/</span>' +
-              actions +
-            '</div>' +
-          '</article>';
-        }).join("") : '<div class="source empty">Press + to add a folder. Drop files or folders anywhere in this window for quick uploads.</div>';
+        const visible = visibleSources();
+        $("shareCount").textContent = sources.length + (sources.length === 1 ? " shared folder" : " shared folders") + (summary.remoteIndexing ? " / indexing vault" : " / autosync on") + (visible.length !== sources.length ? " / filtered " + visible.length : "");
         const serverRow = '<div class="device server-device">' +
           '<div class="device-name"><span class="device-status"><span class="status-dot ' + esc(serverStatus) + '"></span>' + esc(serverName) + '</span></div>' +
           '<div class="device-meta">server</div>' +
@@ -2821,15 +2861,57 @@ function renderHtml(): string {
       }
 
       function renderCrumbs(source, folder) {
-        if (!source) return "";
+        let html = '<span class="folder-browser__path-icon" aria-hidden="true"></span><button class="crumb-button" type="button" data-vault-root="true">Agent Vault</button>';
+        if (!source) {
+          html += '<span class="crumb-sep">/</span><button class="crumb-button" type="button" data-vault-root="true">Geteilte Ordner</button>';
+          return html;
+        }
+        html += '<span class="crumb-sep">/</span><button class="crumb-button" type="button" data-device-root="' + esc(source.deviceKind) + '">' + esc(source.deviceLabel) + '</button>';
         const parts = String(folder || "").split("/").filter(Boolean);
-        let html = '<button class="crumb-button" type="button" data-folder-path="">root</button>';
+        html += '<span class="crumb-sep">/</span><button class="crumb-button" type="button" data-folder-path="">' + esc(source.label) + '</button>';
         let cursor = "";
         for (const part of parts) {
           cursor = cursor ? cursor + "/" + part : part;
           html += '<span class="crumb-sep">/</span><button class="crumb-button" type="button" data-folder-path="' + esc(cursor) + '">' + esc(part) + '</button>';
         }
         return html;
+      }
+
+      function sourcePathLabel(source, folder = "") {
+        if (!source) return "Agent Vault / Geteilte Ordner";
+        return ["Agent Vault", source.deviceLabel, source.label, ...String(folder || "").split("/").filter(Boolean)].join(" / ");
+      }
+
+      function sourceDetail(source) {
+        const isLocal = source.sourceKind === "local";
+        const pathText = isLocal ? source.localDir : source.origin + " / " + source.remotePathPrefix;
+        const localText = isLocal
+          ? (source.available ? fileLabel(source.localFileCount) + " / " + fmtSize(source.localSize) : "offline")
+          : "remote";
+        const pendingText = isLocal ? (source.pendingActions ? source.pendingActions + " pending" : "synced") : "readable";
+        return esc(source.deviceLabel) + " / " + esc(shortPath(pathText)) + " / " + localText + " / " + source.remoteFileCount + " remote / " + fmtSize(source.remoteSize) + " / " + (source.pendingChecked === false ? "sync check deferred" : pendingText);
+      }
+
+      function renderSourceActions(source) {
+        if (source.sourceKind !== "local") return "";
+        return '<span class="folder-item__actions">' +
+          '<button class="folder-item__action" data-open="' + esc(source.localDir) + '" title="Open local folder">' + iconSvg("open") + '</button>' +
+          '<button class="folder-item__action" data-folder="' + esc(source.id) + '" title="New folder">' + iconSvg("folder") + '</button>' +
+          '<button class="folder-item__action" data-sync="' + esc(source.id) + '" title="Sync">' + iconSvg("sync") + '</button>' +
+          '<button class="folder-item__action" data-remove="' + esc(source.id) + '" title="Remove">' + iconSvg("remove") + '</button>' +
+        '</span>';
+      }
+
+      function renderSourceItem(source) {
+        const key = "source::" + source.sourceId;
+        const selected = state.selectedEntryKey === key;
+        return '<div class="folder-item source ' + esc(state.viewMode) + (selected ? " selected" : "") + '" role="button" tabindex="0" draggable="false" data-entry-key="' + esc(key) + '" data-entry-kind="source" data-source-id="' + esc(source.sourceId) + '" data-source-device="' + esc(source.deviceKind) + '" title="' + esc(source.label) + '">' +
+          renderFileIcon("folder", "") +
+          '<span class="folder-item__name">' + esc(source.label) + '</span>' +
+          '<span class="folder-item__device">' + esc(source.deviceLabel) + '</span>' +
+          '<span class="folder-item__meta">' + sourceDetail(source) + '</span>' +
+          renderSourceActions(source) +
+        '</div>';
       }
 
       function renderFileIcon(kind, extension) {
@@ -2851,12 +2933,17 @@ function renderHtml(): string {
       function renderFolderBrowser() {
         const source = selectedSource();
         document.querySelectorAll("[data-view-mode]").forEach((button) => button.classList.toggle("active", button.dataset.viewMode === state.viewMode));
-        $("folderItems").className = "folder-items " + state.viewMode;
+        document.querySelectorAll("[data-device-filter]").forEach((button) => button.classList.toggle("active", button.dataset.deviceFilter === state.deviceFilter));
+        $("detailsToggle").classList.toggle("active", state.showDetails);
+        $("folderItems").className = "folder-items " + state.viewMode + (state.showDetails ? " show-details" : "");
         if (!source) {
-          $("folderTitle").textContent = "Select a source";
-          $("folderMeta").textContent = "Double-click folders to open them.";
-          $("folderCrumbs").innerHTML = "";
-          $("folderItems").innerHTML = '<div class="folder-empty">Choose a shared source on the left to browse files like a folder.</div>';
+          const sources = visibleSources();
+          $("folderTitle").textContent = "Geteilte Ordner";
+          $("folderMeta").textContent = sourcePathLabel(null);
+          $("folderCrumbs").innerHTML = renderCrumbs(null, "");
+          $("folderItems").innerHTML = sources.length
+            ? sources.map((item) => renderSourceItem(item)).join("")
+            : '<div class="folder-empty">Keine geteilten Ordner für diesen Filter.</div>';
           $("folderUp").disabled = true;
           $("folderNew").disabled = true;
           return;
@@ -2872,16 +2959,9 @@ function renderHtml(): string {
         const folderLabel = folder ? fileNameOf(folder) : source.label;
         const loading = Boolean(state.folderLoadingByKey[listingKey]);
         $("folderTitle").textContent = folderLabel;
-        $("folderMeta").textContent =
-          (source.sourceKind === "local" ? "local + vault" : "remote") +
-          " / " +
-          (folder || source.remotePathPrefix || source.space) +
-          " / " +
-          entries.length +
-          " items" +
-          (loading ? " / loading full folder" : "");
+        $("folderMeta").textContent = sourcePathLabel(source, folder) + (state.showDetails ? " / " + entries.length + " items" + (loading ? " / loading full folder" : "") : "");
         $("folderCrumbs").innerHTML = renderCrumbs(source, folder);
-        $("folderUp").disabled = !folder;
+        $("folderUp").disabled = false;
         $("folderNew").disabled = source.sourceKind !== "local";
         $("folderItems").innerHTML = entries.length
           ? entries.map((node) => {
@@ -2908,12 +2988,21 @@ function renderHtml(): string {
       }
 
       async function activateFolderEntry(entryNode, action = "open") {
+        if (entryNode.dataset.entryKind === "source") {
+          const sourceId = entryNode.dataset.sourceId || "";
+          const source = allSources().find((item) => item.sourceId === sourceId);
+          if (!source) return;
+          state.selectedSourceId = sourceId;
+          setCurrentFolder(source, "");
+          renderFolderBrowser();
+          return;
+        }
+
         const source = selectedSource();
         if (!source || !entryNode?.dataset?.entryKind) return;
         if (entryNode.dataset.entryKind === "folder") {
           setCurrentFolder(source, entryNode.dataset.entryPath || "");
           renderFolderBrowser();
-          renderInspector();
           return;
         }
 
@@ -2951,52 +3040,8 @@ function renderHtml(): string {
         return prefix ? prefix + "/" + cleanPath : cleanPath;
       }
 
-      function renderTreeNodes(nodes, source, depth = 0) {
-        if (!nodes?.length) return '<div class="empty-note">No files in this source yet.</div>';
-        return nodes.map((node) => {
-          const metric = node.kind === "folder" ? node.count + " / " + fmtSize(node.size) : fmtSize(node.size);
-          if (node.kind === "folder") {
-            const open = depth < 1 ? " open" : "";
-            return '<details' + open + '>' +
-              '<summary data-tree-folder-path="' + esc(node.path) + '"><span class="tree-name">' + esc(node.name) + '</span><span class="tree-metric">' + metric + '</span></summary>' +
-              renderTreeNodes(node.children || [], source, depth + 1) +
-            '</details>';
-          }
-          const remotePath = source ? remotePathForNode(source, node.path) : node.path;
-          return '<div class="tree-row file-row" data-download-space="' + esc(source?.space || "") + '" data-download-path="' + esc(remotePath) + '" title="Download ' + esc(remotePath) + '">' +
-            '<span class="tree-name">' + esc(node.name) + '</span>' +
-            '<span class="tree-metric">' + metric + '</span>' +
-            '<button class="tree-download" type="button" data-download-space="' + esc(source?.space || "") + '" data-download-path="' + esc(remotePath) + '">' + iconSvg("download") + 'download</button>' +
-          '</div>';
-        }).join("");
-      }
-
       function renderInspector() {
-        const source = selectedSource();
-        const showTree = Boolean(source && state.sideMode === "tree");
-        $("inspectorSwitch").classList.toggle("hidden", !source);
-        $("treeSection").classList.toggle("hidden", !showTree);
-        $("systemSections").classList.toggle("hidden", showTree);
-        document.querySelectorAll("[data-side-mode]").forEach((button) => button.classList.toggle("active", button.dataset.sideMode === state.sideMode));
-        if (!source) return;
-
-        const isLocal = source.sourceKind === "local";
-        const pathText = isLocal ? source.localDir : source.origin + " / " + source.remotePathPrefix;
-        const tree = isLocal ? (source.remoteTree?.length ? source.remoteTree : source.localTree) : source.tree;
-        const visibleCount = isLocal && !source.remoteFileCount ? source.localFileCount : source.remoteFileCount;
-        const visibleSize = isLocal && !source.remoteSize ? source.localSize : source.remoteSize;
-        $("selectedSource").innerHTML =
-          '<h2 class="selected-source-title">' + esc(source.label) + '</h2>' +
-          '<div class="selected-source-meta">' + esc(pathText) + '</div>' +
-          '<div class="selected-source-meta">' + esc(fileLabel(visibleCount)) + ' / ' + esc(fmtSize(visibleSize)) + ' / ' + esc(accessLabel(source.access)) + '</div>';
-        $("accessControls").innerHTML = isLocal ? [
-          ["readonly", "read"],
-          ["writeonly", "write"],
-          ["readwrite", "both"]
-        ].map(([mode, label]) =>
-          '<button class="access-button ' + (source.access === mode ? "active" : "") + '" data-access="' + mode + '" data-share-id="' + esc(source.id) + '">' + label + '</button>'
-        ).join("") : '<span class="access-chip readonly">read only</span>';
-        $("treeList").innerHTML = renderTreeNodes(tree || [], source);
+        return;
       }
 
       function renderOffline(message) {
@@ -3004,7 +3049,6 @@ function renderHtml(): string {
         $("pending").textContent = "0 pending";
         $("deviceScope").textContent = "local";
         $("shareCount").textContent = "status unavailable";
-        $("shares").innerHTML = '<div class="source empty">Agent Vault is reconnecting. Shared folders stay configured locally.</div>';
         $("devices").innerHTML =
           '<div class="device server-device">' +
             '<div class="device-name"><span class="device-status"><span class="status-dot recent"></span>Mac Mini Vault Server</span></div>' +
@@ -3014,9 +3058,10 @@ function renderHtml(): string {
         $("flow").innerHTML = "";
         $("structure").innerHTML = '<div class="empty-note">Waiting for Vault status.</div>';
         $("activity").innerHTML = '<div class="empty-note">No live log while reconnecting.</div>';
-        $("inspectorSwitch").classList.add("hidden");
-        $("treeSection").classList.add("hidden");
-        $("systemSections").classList.remove("hidden");
+        $("folderTitle").textContent = "Geteilte Ordner";
+        $("folderMeta").textContent = "Agent Vault / reconnecting";
+        $("folderCrumbs").innerHTML = renderCrumbs(null, "");
+        $("folderItems").innerHTML = '<div class="folder-empty">' + esc(message || "Status unavailable.") + '</div>';
       }
 
       function schemaNode(id, kind, title, meta, x, y, extra = "") {
@@ -3172,22 +3217,33 @@ function renderHtml(): string {
       document.querySelectorAll("[data-view]").forEach((button) => {
         button.addEventListener("click", () => setView(button.dataset.view));
       });
-      document.querySelectorAll("[data-side-mode]").forEach((button) => {
-        button.addEventListener("click", () => {
-          state.sideMode = button.dataset.sideMode;
-          renderInspector();
-        });
-      });
       document.querySelectorAll("[data-view-mode]").forEach((button) => {
         button.addEventListener("click", () => {
           state.viewMode = button.dataset.viewMode || "grid";
           renderFolderBrowser();
         });
       });
+      document.querySelectorAll("[data-device-filter]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.deviceFilter = button.dataset.deviceFilter || "all";
+          state.selectedSourceId = null;
+          state.selectedEntryKey = null;
+          renderFolderBrowser();
+        });
+      });
+      $("detailsToggle").addEventListener("click", () => {
+        state.showDetails = !state.showDetails;
+        renderFolderBrowser();
+      });
       $("folderUp").addEventListener("click", () => {
         const source = selectedSource();
         if (!source) return;
-        setCurrentFolder(source, parentFolder(currentFolder(source)));
+        if (!currentFolder(source)) {
+          state.selectedSourceId = null;
+          state.selectedEntryKey = null;
+        } else {
+          setCurrentFolder(source, parentFolder(currentFolder(source)));
+        }
         renderFolderBrowser();
         renderInspector();
       });
@@ -3219,6 +3275,21 @@ function renderHtml(): string {
             renderFolderBrowser();
             renderInspector();
           }
+          return;
+        }
+        const vaultRootNode = target?.closest?.("[data-vault-root]");
+        if (vaultRootNode) {
+          state.selectedSourceId = null;
+          state.selectedEntryKey = null;
+          renderFolderBrowser();
+          return;
+        }
+        const deviceRootNode = target?.closest?.("[data-device-root]");
+        if (deviceRootNode?.dataset?.deviceRoot) {
+          state.deviceFilter = deviceRootNode.dataset.deviceRoot;
+          state.selectedSourceId = null;
+          state.selectedEntryKey = null;
+          renderFolderBrowser();
           return;
         }
         const fileActionNode = target?.closest?.("[data-file-action]");
@@ -3253,13 +3324,6 @@ function renderHtml(): string {
           toast("Downloaded " + shortPath(result.download?.targetPath || downloadNode.dataset.downloadPath));
           return;
         }
-        const sourceNode = target?.closest?.("[data-select-source]");
-        const selectedId = target?.dataset?.selectSource || sourceNode?.dataset?.selectSource;
-        if (selectedId) {
-          state.selectedSourceId = selectedId;
-          state.sideMode = "tree";
-          render();
-        }
         const accessMode = target?.dataset?.access;
         const accessShareId = target?.dataset?.shareId;
         const removeId = target?.dataset?.remove;
@@ -3280,7 +3344,6 @@ function renderHtml(): string {
           clearFolderListings();
           if (state.selectedSourceId === "local:" + removeId) {
             state.selectedSourceId = null;
-            state.sideMode = "system";
           }
           await refresh();
         }
@@ -3315,16 +3378,6 @@ function renderHtml(): string {
       });
       document.addEventListener("dblclick", async (event) => {
         const target = event.target instanceof HTMLElement ? event.target : null;
-        const treeFolder = target?.closest?.("[data-tree-folder-path]");
-        if (treeFolder?.dataset) {
-          const source = selectedSource();
-          if (source) {
-            setCurrentFolder(source, treeFolder.dataset.treeFolderPath || "");
-            renderFolderBrowser();
-            renderInspector();
-          }
-          return;
-        }
         const entryNode = target?.closest?.(".folder-item");
         if (!entryNode?.dataset?.entryKind) return;
         event.preventDefault();
@@ -3343,9 +3396,13 @@ function renderHtml(): string {
           const source = selectedSource();
           if (!source) return;
           event.preventDefault();
-          setCurrentFolder(source, parentFolder(currentFolder(source)));
+          if (!currentFolder(source)) {
+            state.selectedSourceId = null;
+            state.selectedEntryKey = null;
+          } else {
+            setCurrentFolder(source, parentFolder(currentFolder(source)));
+          }
           renderFolderBrowser();
-          renderInspector();
         }
       });
       document.addEventListener("dragstart", (event) => {
