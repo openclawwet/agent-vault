@@ -62,6 +62,15 @@ curl -X POST \
 
 Device tokens are stored hashed in SQLite and returned only once when created or rotated.
 
+Authenticated requests also update lightweight device presence. Any authenticated client can call:
+
+```bash
+curl -H "Authorization: Bearer $(cat ~/.agent-vault/dev-token)" \
+  http://127.0.0.1:3474/devices/status
+```
+
+That returns the Mac Mini Vault server plus known clients with online/recent/offline status, last-seen time and scoped spaces. It never returns device tokens.
+
 ## Mac sync CLI
 
 From the MacBook, install the client over the private Tailnet:
@@ -89,7 +98,7 @@ pnpm --filter @agent-vault/mac-sync exec agent-vault-sync ui
 
 The CLI keeps sync metadata under `.agent-vault` inside the selected folder and writes conflict review files there instead of overwriting divergent edits. `watch` now follows the main sync folder plus every enabled shared folder from `~/.agent-vault/shares.json`.
 
-The desktop UI is installed as `~/Applications/Agent Vault.app`. The native app starts a private local UI bridge on demand, keeps the device token server-side, adds a macOS menu bar status item, and stays active from the menu bar when the window is closed. The status menu shows connection state, connected devices, recent flow stats, and actions for opening the window, refreshing, and syncing now. The window lets the user add shared folders, immediately syncs new shares into prefixed Vault paths, auto-syncs while the app is open, uploads dropped files into `Desktop Drops`, can create empty shared folders through a hidden marker file, opens folders in Finder, and shows devices, flow stats, Vault structure and the remote change log. Share prefixes are ignored by the main `~/AgentVault` sync so shared folders do not duplicate back into the main folder. `agent-vault-sync ui --browser` is only a debug fallback.
+The desktop UI is installed as `~/Applications/Agent Vault.app`. The native app starts a private local UI bridge on demand, keeps the device token server-side, adds a macOS menu bar status item, and stays active from the menu bar when the window is closed. The status menu shows connection state, the Mac Mini Vault server, connected clients, recent flow stats, and actions for opening the window, refreshing, and syncing now. The window lets the user add shared folders, immediately syncs new shares into prefixed Vault paths, auto-syncs while the app is open, uploads dropped files into `Desktop Drops`, can create empty shared folders through a hidden marker file, opens folders in Finder, and shows devices, per-client space scopes, flow stats, Vault structure and the remote change log. Share prefixes are ignored by the main `~/AgentVault` sync so shared folders do not duplicate back into the main folder. `agent-vault-sync ui --browser` is only a debug fallback.
 
 ## Phone PWA
 

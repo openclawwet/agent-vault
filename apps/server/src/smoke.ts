@@ -112,6 +112,16 @@ try {
   assert(oldTokenCheck.status === 401, "old rotated token should be invalid");
   const rotatedAuth = { authorization: `Bearer ${rotatedToken}` };
 
+  const deviceStatus = await fetch(`${started.url}/devices/status`, {
+    headers: { ...rotatedAuth, "x-agent-vault-client": "smoke-client" },
+  });
+  assert(deviceStatus.ok, "device status endpoint failed");
+  const deviceStatusJson = await expectJson(deviceStatus);
+  const deviceServer = deviceStatusJson.server as { name?: string; status?: string } | undefined;
+  const deviceStatuses = deviceStatusJson.devices as Array<{ id: string; status: string; clientName?: string }> | undefined;
+  assert(deviceServer?.status === "online", "server presence missing");
+  assert(deviceStatuses?.some((device) => device.id === macbookDevice.id && device.status === "online"), "current device presence missing");
+
   const update = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
     method: "PUT",
     headers: { ...rotatedAuth, "idempotency-key": "smoke-update" },

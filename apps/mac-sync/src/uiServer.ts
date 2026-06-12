@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ChangeEventRecord, DeviceRecord, VaultFileRecord } from "@agent-vault/core";
+import type { ChangeEventRecord, DeviceStatusRecord, VaultFileRecord, VaultServerStatus } from "@agent-vault/core";
 import type { MacSyncConfig } from "./config.js";
 import { configWithShareIgnores, syncAllSources, summaryChanged } from "./autoSync.js";
 import { readActivity, recordActivity } from "./activityLog.js";
@@ -185,18 +185,69 @@ function flowStats(changes: ChangeEventRecord[], files: VaultFileRecord[]) {
   });
 }
 
-async function connectedDevices(vault: VaultClient): Promise<{ devices: DeviceRecord[]; currentDeviceId: string; adminVisible: boolean }> {
+function fallbackServerStatus(): VaultServerStatus {
+  return {
+    id: "server:mac-mini",
+    name: "Mac Mini Vault Server",
+    role: "vault-server",
+    status: "online",
+    lastSeenAt: new Date().toISOString(),
+  };
+}
+
+async function connectedDevices(vault: VaultClient): Promise<{
+  server: VaultServerStatus;
+  devices: DeviceStatusRecord[];
+  currentDeviceId: string;
+  presenceVisible: boolean;
+  adminVisible: boolean;
+}> {
   const me = await vault.me();
   try {
+    const status = await vault.deviceStatus();
     return {
-      devices: await vault.listDevices(),
+      server: status.server,
+      devices: status.devices,
+      currentDeviceId: status.currentDeviceId,
+      presenceVisible: true,
+      adminVisible: true,
+    };
+  } catch {
+    // Older live Vault servers do not have presence yet. Still show the Mac Mini server,
+    // because reaching /me already proves the server side is online.
+  }
+
+  const self: DeviceStatusRecord = {
+    ...me.device,
+    status: "online",
+    lastSeenAt: new Date().toISOString(),
+    clientName: "mac-sync",
+    clientVersion: null,
+    hostName: null,
+    current: true,
+  };
+  try {
+    return {
+      server: fallbackServerStatus(),
+      devices: (await vault.listDevices()).map((device) => ({
+        ...device,
+        status: device.id === me.device.id ? "online" : "offline",
+        lastSeenAt: device.id === me.device.id ? new Date().toISOString() : null,
+        clientName: device.id === me.device.id ? "mac-sync" : null,
+        clientVersion: null,
+        hostName: null,
+        current: device.id === me.device.id,
+      })),
       currentDeviceId: me.device.id,
+      presenceVisible: false,
       adminVisible: true,
     };
   } catch {
     return {
-      devices: [me.device],
+      server: fallbackServerStatus(),
+      devices: [self],
       currentDeviceId: me.device.id,
+      presenceVisible: false,
       adminVisible: false,
     };
   }
@@ -210,7 +261,13 @@ async function buildSummary(config: MacSyncConfig) {
     vault.listSpaces(),
     statusCommand(mainConfig).catch((error: unknown) => ({ actions: [], error: error instanceof Error ? error.message : "Status failed." })),
     readActivity(),
-    connectedDevices(vault).catch(() => ({ devices: [], currentDeviceId: "", adminVisible: false })),
+    connectedDevices(vault).catch(() => ({
+      server: fallbackServerStatus(),
+      devices: [],
+      currentDeviceId: "",
+      presenceVisible: false,
+      adminVisible: false,
+    })),
   ]);
   const localShares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share)));
   const remoteSpaces = await Promise.all(
@@ -267,7 +324,9 @@ async function buildSummary(config: MacSyncConfig) {
     shares,
     remoteSpaces,
     devices: deviceSummary.devices,
+    server: deviceSummary.server,
     currentDeviceId: deviceSummary.currentDeviceId,
+    devicesPresenceVisible: deviceSummary.presenceVisible,
     devicesAdminVisible: deviceSummary.adminVisible,
     flowStats: flowStats(recentChanges, remoteFiles),
     recentChanges,
@@ -1013,6 +1072,26 @@ function renderHtml(): string {
         line-height: 1.35;
         overflow-wrap: anywhere;
       }
+      .server-device .device-name {
+        color: rgba(237, 230, 218, 0.84);
+      }
+      .device-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .status-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: rgba(237, 230, 218, 0.28);
+      }
+      .status-dot.online {
+        background: var(--ok);
+      }
+      .status-dot.recent {
+        background: var(--warn);
+      }
       .device-meta,
       .stat-meta {
         color: var(--faint);
@@ -1332,6 +1411,12 @@ function renderHtml(): string {
         return value.toFixed(value >= 10 || index === 0 ? 0 : 1) + " " + units[index];
       };
       const fileLabel = (count) => count + " " + (count === 1 ? "file" : "files");
+      const statusLabel = (status) => status === "online" ? "online" : status === "recent" ? "recent" : "offline";
+      const scopeLabel = (device) => {
+        const scopes = device.scopes || [];
+        if (!scopes.length) return "no spaces";
+        return scopes.map((scope) => scope.space + " " + (scope.permissions || []).join("")).join(" / ");
+      };
       const shortPath = (value) => {
         const text = String(value ?? "");
         const parts = text.split("/").filter(Boolean);
@@ -1361,9 +1446,9 @@ function renderHtml(): string {
       function render() {
         const summary = state.summary;
         const totalPending = summary.mainPendingActions + summary.shares.reduce((sum, share) => sum + share.pendingActions, 0);
-        $("connection").textContent = summary.defaultSpace + " / autosync";
+        $("connection").textContent = summary.server.name + " / " + summary.defaultSpace + " / autosync";
         $("pending").textContent = totalPending + " pending";
-        $("deviceScope").textContent = summary.devicesAdminVisible ? "all devices" : "this device";
+        $("deviceScope").textContent = summary.devicesPresenceVisible ? "presence" : "local";
         $("shareCount").textContent = summary.shares.length + (summary.shares.length === 1 ? " source" : " sources") + " / autosync on";
         $("shares").innerHTML = summary.shares.length ? summary.shares.map((share) =>
           '<article class="source">' +
@@ -1384,14 +1469,23 @@ function renderHtml(): string {
             '</div>' +
           '</article>'
         ).join("") : '<div class="source empty">Press + to add a folder. Drop files or folders anywhere in this window for quick uploads.</div>';
-        $("devices").innerHTML = summary.devices.length ? summary.devices.slice(0, 5).map((device) => {
+        const serverRow = '<div class="device server-device">' +
+          '<div class="device-name"><span class="device-status"><span class="status-dot online"></span>' + esc(summary.server.name) + '</span></div>' +
+          '<div class="device-meta">server</div>' +
+        '</div>';
+        const deviceRows = summary.devices.length ? summary.devices.slice(0, 6).map((device) => {
           const scopeCount = (device.scopes || []).length;
-          const isCurrent = device.id === summary.currentDeviceId;
+          const isCurrent = device.current || device.id === summary.currentDeviceId;
+          const status = statusLabel(device.status);
           return '<div class="device">' +
-            '<div class="device-name">' + esc(device.name) + (isCurrent ? ' / current' : '') + '</div>' +
-            '<div class="device-meta">' + scopeCount + ' spaces</div>' +
+            '<div>' +
+              '<div class="device-name"><span class="device-status"><span class="status-dot ' + esc(device.status) + '"></span>' + esc(device.name) + (isCurrent ? ' / current' : '') + '</span></div>' +
+              '<div class="subtle">' + esc(scopeLabel(device)) + '</div>' +
+            '</div>' +
+            '<div class="device-meta">' + status + '<br />' + scopeCount + ' spaces</div>' +
           '</div>';
-        }).join("") : '<div class="empty-note">No device data.</div>';
+        }).join("") : '<div class="empty-note">No client data.</div>';
+        $("devices").innerHTML = serverRow + deviceRows;
         $("flow").innerHTML = summary.flowStats.map((stat) =>
           '<div class="stat-row">' +
             '<div class="stat-label">' + esc(stat.label) + '</div>' +
@@ -1443,13 +1537,16 @@ function renderHtml(): string {
         const shares = summary.shares.slice(0, 5);
         const nodeHtml = [];
         const lines = [];
-        nodeHtml.push(schemaNode("node-device", "device", "MacBook", summary.syncFolder, 76, 230));
-        nodeHtml.push(schemaNode("node-space", "vault space", summary.defaultSpace, defaultSpace ? fileLabel(defaultSpace.fileCount) + " / " + fmtSize(defaultSpace.size) : "0 files", 414, 230));
+        const currentDevice = summary.devices.find((device) => device.current || device.id === summary.currentDeviceId);
+        nodeHtml.push(schemaNode("node-device", "device", currentDevice?.name || "This Mac", summary.syncFolder, 76, 230));
+        nodeHtml.push(schemaNode("node-server", "server", summary.server.name, "private Tailnet Vault", 360, 230));
+        nodeHtml.push(schemaNode("node-space", "vault space", summary.defaultSpace, defaultSpace ? fileLabel(defaultSpace.fileCount) + " / " + fmtSize(defaultSpace.size) : "0 files", 590, 230));
         nodeHtml.push(schemaNode("node-drops", "quick drop", "Desktop Drops", "window-wide drop target", 718, 92));
         nodeHtml.push(schemaNode("node-log", "audit", "Activity Log", summary.recentChanges.length + " remote events", 718, 374));
-        lines.push('<path class="schema-line" d="M264 273 C330 273 342 273 414 273" />');
-        lines.push('<path class="schema-line" d="M602 252 C650 202 674 150 718 135" />');
-        lines.push('<path class="schema-line" d="M602 294 C662 324 672 382 718 418" />');
+        lines.push('<path class="schema-line" d="M264 273 C314 273 320 273 360 273" />');
+        lines.push('<path class="schema-line" d="M548 273 C566 273 572 273 590 273" />');
+        lines.push('<path class="schema-line" d="M778 252 C790 202 766 150 718 135" />');
+        lines.push('<path class="schema-line" d="M778 294 C798 324 770 382 718 418" />');
         shares.forEach((share, index) => {
           const x = index % 2 === 0 ? 74 : 190;
           const y = 38 + index * 90;
@@ -1457,7 +1554,7 @@ function renderHtml(): string {
           nodeHtml.push(schemaNode(id, "source", share.label, shortPath(share.localDir), x, y, "source-node"));
           const startX = x + 188;
           const startY = y + 43;
-          lines.push('<path class="schema-line" d="M' + startX + ' ' + startY + ' C330 ' + startY + ' 350 273 414 273" />');
+          lines.push('<path class="schema-line" d="M' + startX + ' ' + startY + ' C316 ' + startY + ' 324 273 360 273" />');
         });
         $("schemaLines").innerHTML = lines.join("");
         $("schemaNodes").innerHTML = nodeHtml.join("");

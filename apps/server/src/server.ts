@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   DEFAULT_SPACE,
   type CurrentDeviceResult,
+  type DeviceStatusResult,
   type DeviceScopeRecord,
   type HealthResult,
   type ListSpacesResult,
@@ -229,11 +230,24 @@ function requireAuth(req: IncomingMessage, app: AgentVaultApp): AuthContext {
     throw new HttpError(401, "unauthorized", "Missing or invalid Agent Vault token.");
   }
 
+  app.db.touchDevicePresence(device.id, {
+    clientName: headerValue(req, "x-agent-vault-client"),
+    clientVersion: headerValue(req, "x-agent-vault-version"),
+    hostName: headerValue(req, "x-agent-vault-host"),
+  });
+
   return {
     deviceId: device.id,
     deviceName: device.name,
     scopes: device.scopes,
   };
+}
+
+function headerValue(req: IncomingMessage, name: string): string | null {
+  const value = req.headers[name];
+  const first = Array.isArray(value) ? value[0] : value;
+  const text = first?.trim();
+  return text || null;
 }
 
 function queryPath(url: URL): string {
@@ -305,6 +319,16 @@ function requireAnyAdmin(auth: AuthContext): void {
   if (!auth.scopes.some((scope) => scope.permissions.includes("admin"))) {
     throw new HttpError(403, "forbidden", "Admin permission is required.");
   }
+}
+
+function serverStatus(): DeviceStatusResult["server"] {
+  return {
+    id: "server:mac-mini",
+    name: process.env.AGENT_VAULT_SERVER_NAME?.trim() || "Mac Mini Vault Server",
+    role: "vault-server",
+    status: "online",
+    lastSeenAt: new Date().toISOString(),
+  };
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -446,6 +470,18 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
   if (method === "GET" && segments.length === 1 && segments[0] === "devices") {
     requireAnyAdmin(auth);
     sendJson(res, 200, { devices: app.db.listDevices() });
+    return;
+  }
+
+  if (method === "GET" && segments.length === 2 && segments[0] === "devices" && segments[1] === "status") {
+    const body: DeviceStatusResult = {
+      server: serverStatus(),
+      devices: app.db.listDeviceStatuses(auth.deviceId),
+      currentDeviceId: auth.deviceId,
+      onlineWindowSeconds: 90,
+      recentWindowSeconds: 15 * 60,
+    };
+    sendJson(res, 200, body);
     return;
   }
 

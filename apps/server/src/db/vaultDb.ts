@@ -9,7 +9,10 @@ import {
   type AuditOperation,
   type ChangeEventRecord,
   type ChangeOperation,
+  type DevicePresenceRecord,
+  type DevicePresenceStatus,
   type DeviceRecord,
+  type DeviceStatusRecord,
   type DeviceScopeRecord,
   type SpaceInfo,
   type VaultFileRecord,
@@ -96,6 +99,14 @@ interface DeviceScopeRow {
   can_admin: number;
 }
 
+interface DevicePresenceRow {
+  device_id: string;
+  last_seen_at: string;
+  client_name: string | null;
+  client_version: string | null;
+  host_name: string | null;
+}
+
 export interface UpsertFileInput {
   id: string;
   space: string;
@@ -147,6 +158,12 @@ export interface CreateDeviceInput {
   name: string;
   tokenHash: string;
   scopes: DeviceScopeInput[];
+}
+
+export interface TouchDevicePresenceInput {
+  clientName?: string | null;
+  clientVersion?: string | null;
+  hostName?: string | null;
 }
 
 function nowIso(): string {
@@ -246,6 +263,24 @@ function mapDevice(row: DeviceRow, scopes: DeviceScopeRecord[]): DeviceRecord {
   };
 }
 
+function mapPresence(row: DevicePresenceRow): DevicePresenceRecord {
+  return {
+    deviceId: row.device_id,
+    lastSeenAt: row.last_seen_at,
+    clientName: row.client_name,
+    clientVersion: row.client_version,
+    hostName: row.host_name,
+  };
+}
+
+function presenceStatus(lastSeenAt: string | null, nowMs: number): DevicePresenceStatus {
+  if (!lastSeenAt) return "offline";
+  const ageMs = nowMs - new Date(lastSeenAt).getTime();
+  if (ageMs <= 90 * 1000) return "online";
+  if (ageMs <= 15 * 60 * 1000) return "recent";
+  return "offline";
+}
+
 export class VaultDb {
   constructor(private readonly db: DatabaseSync) {}
 
@@ -339,6 +374,15 @@ export class VaultDb {
         FOREIGN KEY(space) REFERENCES spaces(name) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS device_presence (
+        device_id TEXT PRIMARY KEY,
+        last_seen_at TEXT NOT NULL,
+        client_name TEXT,
+        client_version TEXT,
+        host_name TEXT,
+        FOREIGN KEY(device_id) REFERENCES devices(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS idempotency_keys (
         key TEXT PRIMARY KEY,
         method TEXT NOT NULL,
@@ -424,6 +468,57 @@ export class VaultDb {
       .prepare("SELECT id, name, token_hash, created_at, rotated_at, disabled_at FROM devices ORDER BY name")
       .all() as unknown as DeviceRow[];
     return rows.map((row) => this.mapDeviceWithScopes(row));
+  }
+
+  touchDevicePresence(deviceId: string, input: TouchDevicePresenceInput = {}): DevicePresenceRecord {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `
+        INSERT INTO device_presence (device_id, last_seen_at, client_name, client_version, host_name)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(device_id) DO UPDATE SET
+          last_seen_at = excluded.last_seen_at,
+          client_name = COALESCE(excluded.client_name, device_presence.client_name),
+          client_version = COALESCE(excluded.client_version, device_presence.client_version),
+          host_name = COALESCE(excluded.host_name, device_presence.host_name)
+      `,
+      )
+      .run(
+        deviceId,
+        now,
+        input.clientName?.trim() || null,
+        input.clientVersion?.trim() || null,
+        input.hostName?.trim() || null,
+      );
+    const row = this.db
+      .prepare("SELECT device_id, last_seen_at, client_name, client_version, host_name FROM device_presence WHERE device_id = ?")
+      .get(deviceId) as unknown as DevicePresenceRow | undefined;
+    if (!row) {
+      throw new Error("Failed to touch device presence.");
+    }
+    return mapPresence(row);
+  }
+
+  listDeviceStatuses(currentDeviceId: string): DeviceStatusRecord[] {
+    const nowMs = Date.now();
+    const presenceRows = this.db
+      .prepare("SELECT device_id, last_seen_at, client_name, client_version, host_name FROM device_presence")
+      .all() as unknown as DevicePresenceRow[];
+    const presenceByDevice = new Map(presenceRows.map((row) => [row.device_id, mapPresence(row)]));
+
+    return this.listDevices().map((device) => {
+      const presence = presenceByDevice.get(device.id);
+      return {
+        ...device,
+        status: presenceStatus(presence?.lastSeenAt ?? null, nowMs),
+        lastSeenAt: presence?.lastSeenAt ?? null,
+        clientName: presence?.clientName ?? null,
+        clientVersion: presence?.clientVersion ?? null,
+        hostName: presence?.hostName ?? null,
+        current: device.id === currentDeviceId,
+      };
+    });
   }
 
   createDevice(input: CreateDeviceInput): DeviceRecord {

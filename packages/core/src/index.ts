@@ -26,6 +26,33 @@ export interface DeviceRecord {
   disabledAt: string | null;
 }
 
+export type DevicePresenceStatus = "online" | "recent" | "offline";
+
+export interface DevicePresenceRecord {
+  deviceId: string;
+  lastSeenAt: string;
+  clientName: string | null;
+  clientVersion: string | null;
+  hostName: string | null;
+}
+
+export interface DeviceStatusRecord extends DeviceRecord {
+  status: DevicePresenceStatus;
+  lastSeenAt: string | null;
+  clientName: string | null;
+  clientVersion: string | null;
+  hostName: string | null;
+  current: boolean;
+}
+
+export interface VaultServerStatus {
+  id: "server:mac-mini";
+  name: string;
+  role: "vault-server";
+  status: "online";
+  lastSeenAt: string;
+}
+
 export interface VaultFileRecord {
   id: string;
   space: string;
@@ -90,6 +117,14 @@ export interface ListSpacesResult {
 export interface CurrentDeviceResult {
   device: DeviceRecord;
   spaces: SpaceAccessInfo[];
+}
+
+export interface DeviceStatusResult {
+  server: VaultServerStatus;
+  devices: DeviceStatusRecord[];
+  currentDeviceId: string;
+  onlineWindowSeconds: number;
+  recentWindowSeconds: number;
 }
 
 export interface HealthResult {

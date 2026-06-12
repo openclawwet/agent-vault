@@ -4,8 +4,10 @@ import WebKit
 private struct VaultSummary: Decodable {
     let mainPendingActions: Int
     let shares: [VaultShare]
+    let server: VaultServer?
     let devices: [VaultDevice]
     let currentDeviceId: String
+    let devicesPresenceVisible: Bool?
     let devicesAdminVisible: Bool
     let flowStats: [VaultFlow]
 }
@@ -23,10 +25,21 @@ private struct VaultDevice: Decodable {
     let id: String
     let name: String
     let scopes: [VaultScope]?
+    let status: String?
+    let current: Bool?
+    let lastSeenAt: String?
+}
+
+private struct VaultServer: Decodable {
+    let id: String
+    let name: String
+    let status: String
+    let lastSeenAt: String
 }
 
 private struct VaultScope: Decodable {
     let space: String?
+    let permissions: [String]?
 }
 
 private struct VaultFlow: Decodable {
@@ -282,14 +295,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             menu.addItem(overview)
 
             menu.addItem(.separator())
-            let devicesTitle = NSMenuItem(title: summary.devicesAdminVisible ? "Devices" : "Current Device", action: nil, keyEquivalent: "")
+            if let server = summary.server {
+                let serverItem = NSMenuItem(title: "\(server.name) - \(server.status)", action: nil, keyEquivalent: "")
+                serverItem.isEnabled = false
+                menu.addItem(serverItem)
+            }
+
+            let devicesTitle = NSMenuItem(title: summary.devicesPresenceVisible == true ? "Devices" : "Current Device", action: nil, keyEquivalent: "")
             devicesTitle.isEnabled = false
             menu.addItem(devicesTitle)
 
             for device in summary.devices.prefix(5) {
-                let current = device.id == summary.currentDeviceId ? " current" : ""
+                let current = (device.current == true || device.id == summary.currentDeviceId) ? " current" : ""
                 let spaces = device.scopes?.count ?? 0
-                let item = NSMenuItem(title: "\(device.name)\(current) - \(spaces) spaces", action: nil, keyEquivalent: "")
+                let status = device.status ?? "offline"
+                let item = NSMenuItem(title: "\(device.name)\(current) - \(status), \(spaces) spaces", action: nil, keyEquivalent: "")
                 item.isEnabled = false
                 menu.addItem(item)
             }

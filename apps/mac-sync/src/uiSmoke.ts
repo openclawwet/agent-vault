@@ -100,6 +100,10 @@ try {
   assert(summary.ok, "summary failed");
   const summaryJson = await expectJson(summary);
   const activity = summaryJson.activity as unknown[] | undefined;
+  const server = summaryJson.server as { name?: string; status?: string } | undefined;
+  const devices = summaryJson.devices as Array<{ name?: string; status?: string }> | undefined;
+  assert(server?.name === "Mac Mini Vault Server" && server.status === "online", "summary should include Mac Mini server presence");
+  assert(devices?.some((device) => device.status === "online"), "summary should include online device presence");
   assert(activity?.length, "activity log should include share work");
 
   console.log("Agent Vault desktop UI smoke passed.");

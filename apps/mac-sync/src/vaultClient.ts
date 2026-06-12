@@ -2,6 +2,7 @@ import type {
   ChangeEventRecord,
   CurrentDeviceResult,
   DeviceRecord,
+  DeviceStatusResult,
   ListFilesResult,
   ListSpacesResult,
   SpaceAccessInfo,
@@ -35,6 +36,15 @@ export class VaultClient {
     const response = await this.request("/devices");
     const body = (await response.json()) as { devices: DeviceRecord[] };
     return body.devices;
+  }
+
+  async deviceStatus(): Promise<DeviceStatusResult> {
+    const response = await this.request("/devices/status", {
+      headers: {
+        "x-agent-vault-client": "mac-sync",
+      },
+    });
+    return (await response.json()) as DeviceStatusResult;
   }
 
   async listChanges(space: string, since = 0): Promise<{ changes: ChangeEventRecord[]; cursor: number }> {
