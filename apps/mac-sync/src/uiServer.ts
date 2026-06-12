@@ -1,13 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ChangeEventRecord, DeviceStatusRecord, SpaceAccessInfo, VaultFileRecord, VaultServerStatus } from "@agent-vault/core";
 import type { MacSyncConfig } from "./config.js";
 import { configWithShareIgnores, syncAllSources, summaryChanged } from "./autoSync.js";
 import { readActivity, recordActivity } from "./activityLog.js";
-import { scanLocal } from "./localState.js";
+import type { LocalScanOptions } from "./localState.js";
 import { addShare, loadShareConfig, normalizeShareAccess, removeShare, updateShare, type ShareRecord } from "./shareConfig.js";
 import { shareStatus, syncShare } from "./shareSync.js";
 import { statusCommand } from "./syncCommands.js";
@@ -125,12 +125,50 @@ function changedCount(actions: Awaited<ReturnType<typeof statusCommand>>["action
   return actions.filter((action) => action.kind !== "noop").length;
 }
 
-async function summarizeShare(config: MacSyncConfig, share: ShareRecord) {
+function normalizedLocalPrefix(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function isIgnoredForUi(relativePath: string, name: string, options: LocalScanOptions): boolean {
+  const ignoredNames = new Set([".agent-vault", ...(options.ignoreNames ?? [])]);
+  if (ignoredNames.has(name)) return true;
+
+  const normalized = normalizedLocalPrefix(relativePath);
+  return (options.ignorePathPrefixes ?? [])
+    .map(normalizedLocalPrefix)
+    .filter(Boolean)
+    .some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
+}
+
+async function scanLocalForUi(localDir: string, options: LocalScanOptions = {}): Promise<TreeFile[]> {
+  const root = path.resolve(localDir);
+  const results: TreeFile[] = [];
+
+  async function walk(current: string): Promise<void> {
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolute = path.join(current, entry.name);
+      const relative = path.relative(root, absolute).split(path.sep).join("/");
+      if (isIgnoredForUi(relative, entry.name, options)) continue;
+      if (entry.isDirectory()) {
+        await walk(absolute);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const fileStat = await stat(absolute);
+      results.push({ path: relative, size: fileStat.size });
+    }
+  }
+
+  await mkdir(root, { recursive: true });
+  await walk(root);
+  return results.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function summarizeShare(config: MacSyncConfig, share: ShareRecord, options: { checkPending?: boolean } = {}) {
   try {
-    const [files, status] = await Promise.all([
-      scanLocal(share.localDir, { ignoreNames: share.ignoreNames, ignorePathPrefixes: share.ignorePathPrefixes }),
-      shareStatus(config, share),
-    ]);
+    const files = await scanLocalForUi(share.localDir, { ignoreNames: share.ignoreNames, ignorePathPrefixes: share.ignorePathPrefixes });
+    const status = options.checkPending ? await shareStatus(config, share) : { actions: [] };
     const localSize = files.reduce((sum, file) => sum + file.size, 0);
     return {
       ...share,
@@ -138,6 +176,7 @@ async function summarizeShare(config: MacSyncConfig, share: ShareRecord) {
       localSize,
       localTree: fileTree(files, "", 700),
       pendingActions: changedCount(status.actions),
+      pendingChecked: Boolean(options.checkPending),
       available: true,
     };
   } catch (error: unknown) {
@@ -147,6 +186,7 @@ async function summarizeShare(config: MacSyncConfig, share: ShareRecord) {
       localSize: 0,
       localTree: [],
       pendingActions: 0,
+      pendingChecked: Boolean(options.checkPending),
       available: false,
       error: error instanceof Error ? error.message : "Share is unavailable.",
     };
@@ -394,35 +434,45 @@ async function connectedDevices(vault: VaultClient): Promise<{
   }
 }
 
-async function buildSummary(config: MacSyncConfig) {
-  const vault = new VaultClient(config.serverUrl, config.token);
-  const shareConfig = await loadShareConfig();
-  const mainConfig = configWithShareIgnores(config, shareConfig.shares);
-  const fallbackSpace: SpaceAccessInfo = {
-    name: config.space,
-    createdAt: new Date().toISOString(),
-    permissions: [],
-  };
-  const [spacesResult, mainStatus, activity, deviceSummary] = await Promise.all([
-    vault.listSpaces().then(
-      (spaces) => ({ spaces, error: null as string | null }),
-      (error: unknown) => ({
-        spaces: [fallbackSpace],
-        error: error instanceof Error ? error.message : "Vault connection failed.",
-      }),
-    ),
-    statusCommand(mainConfig).catch((error: unknown) => ({ actions: [], error: error instanceof Error ? error.message : "Status failed." })),
-    readActivity(),
-    connectedDevices(vault).catch(() => ({
-      server: fallbackServerStatus(),
-      devices: [],
-      currentDeviceId: "",
-      presenceVisible: false,
-      adminVisible: false,
-    })),
-  ]);
-  const spaces = spacesResult.spaces;
-  const localShares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share)));
+interface RemoteSpaceSummary {
+  name: string;
+  permissions: SpaceAccessInfo["permissions"];
+  fileCount: number;
+  size: number;
+  folders: ReturnType<typeof folderTree>;
+  files: VaultFileRecord[];
+  tree: TreeNode[];
+  sources: ReturnType<typeof remoteSourcesForSpace>;
+  recentChanges: Array<ChangeEventRecord & { space?: string }>;
+  error?: string;
+}
+
+interface RemoteSnapshot {
+  spaces: RemoteSpaceSummary[];
+  remoteFiles: VaultFileRecord[];
+  recentChanges: Array<ChangeEventRecord & { space: string }>;
+  indexedAt: string;
+}
+
+let remoteSnapshot: RemoteSnapshot | null = null;
+let remoteRefresh: Promise<RemoteSnapshot> | null = null;
+const REMOTE_SNAPSHOT_TTL_MS = 60_000;
+
+function placeholderRemoteSpaces(spaces: SpaceAccessInfo[]): RemoteSpaceSummary[] {
+  return spaces.map((space) => ({
+    name: space.name,
+    permissions: space.permissions,
+    fileCount: 0,
+    size: 0,
+    folders: [],
+    files: [],
+    tree: [],
+    sources: [],
+    recentChanges: [],
+  }));
+}
+
+async function buildRemoteSnapshot(vault: VaultClient, spaces: SpaceAccessInfo[]): Promise<RemoteSnapshot> {
   const remoteSpaces = await Promise.all(
     spaces.map(async (space) => {
       try {
@@ -458,6 +508,74 @@ async function buildSummary(config: MacSyncConfig) {
   const recentChanges = remoteSpaces
     .flatMap((space) => space.recentChanges.map((change) => ({ ...change, space: space.name })))
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  return { spaces: remoteSpaces, remoteFiles, recentChanges, indexedAt: new Date().toISOString() };
+}
+
+function getRemoteSnapshot(vault: VaultClient, spaces: SpaceAccessInfo[], wait: boolean): RemoteSnapshot | Promise<RemoteSnapshot> | null {
+  if (wait) {
+    remoteRefresh ??= buildRemoteSnapshot(vault, spaces)
+      .then((snapshot) => {
+        remoteSnapshot = snapshot;
+        return snapshot;
+      })
+      .finally(() => {
+        remoteRefresh = null;
+      });
+    return remoteRefresh;
+  }
+
+  const snapshotAge = remoteSnapshot ? Date.now() - new Date(remoteSnapshot.indexedAt).getTime() : Number.POSITIVE_INFINITY;
+  const stale = !remoteSnapshot || snapshotAge > REMOTE_SNAPSHOT_TTL_MS;
+  if (stale && !remoteRefresh) {
+    remoteRefresh = buildRemoteSnapshot(vault, spaces)
+      .then((snapshot) => {
+        remoteSnapshot = snapshot;
+        return snapshot;
+      })
+      .finally(() => {
+        remoteRefresh = null;
+      });
+  }
+
+  return remoteSnapshot;
+}
+
+async function buildSummary(config: MacSyncConfig, options: { waitForRemote?: boolean; checkPending?: boolean } = {}) {
+  const vault = new VaultClient(config.serverUrl, config.token);
+  const shareConfig = await loadShareConfig();
+  const mainConfig = configWithShareIgnores(config, shareConfig.shares);
+  const fallbackSpace: SpaceAccessInfo = {
+    name: config.space,
+    createdAt: new Date().toISOString(),
+    permissions: [],
+  };
+  const [spacesResult, mainStatus, activity, deviceSummary] = await Promise.all([
+    vault.listSpaces().then(
+      (spaces) => ({ spaces, error: null as string | null }),
+      (error: unknown) => ({
+        spaces: [fallbackSpace],
+        error: error instanceof Error ? error.message : "Vault connection failed.",
+      }),
+    ),
+    options.checkPending
+      ? statusCommand(mainConfig).catch((error: unknown) => ({ actions: [], error: error instanceof Error ? error.message : "Status failed." }))
+      : Promise.resolve({ actions: [] }),
+    readActivity(),
+    connectedDevices(vault).catch(() => ({
+      server: fallbackServerStatus(),
+      devices: [],
+      currentDeviceId: "",
+      presenceVisible: false,
+      adminVisible: false,
+    })),
+  ]);
+  const spaces = spacesResult.spaces;
+  const localShares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share, { checkPending: options.checkPending })));
+  const snapshotResult = getRemoteSnapshot(vault, spaces, Boolean(options.waitForRemote));
+  const snapshot = snapshotResult instanceof Promise ? await snapshotResult : snapshotResult;
+  const remoteSpaces = snapshot?.spaces ?? placeholderRemoteSpaces(spaces);
+  const remoteFiles = snapshot?.remoteFiles ?? [];
+  const recentChanges = snapshot?.recentChanges ?? [];
   const shares = localShares.map((share) => {
     const remoteSpace = remoteSpaces.find((space) => space.name === share.space);
     const remoteShareFiles = remoteSpace?.files.filter((file) => belongsToPrefix(file.path, share.remotePathPrefix)) ?? [];
@@ -495,6 +613,8 @@ async function buildSummary(config: MacSyncConfig) {
     devicesPresenceVisible: deviceSummary.presenceVisible,
     devicesAdminVisible: deviceSummary.adminVisible,
     connectionError: spacesResult.error,
+    remoteIndexing: Boolean(remoteRefresh),
+    remoteIndexedAt: snapshot?.indexedAt ?? null,
     flowStats: flowStats(recentChanges, remoteFiles),
     recentChanges,
     activity,
@@ -503,6 +623,7 @@ async function buildSummary(config: MacSyncConfig) {
 
 async function syncAll(config: MacSyncConfig) {
   const result = await syncAllSources(config);
+  remoteSnapshot = null;
   await recordActivity("sync", "Synced Agent Vault desktop sources", {
     main: result.main,
     total: result.total,
@@ -532,6 +653,7 @@ async function createFolderMarker(config: MacSyncConfig, share: ShareRecord, fol
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   });
   const synced = await syncShare(config, share);
+  remoteSnapshot = null;
   await recordActivity("sync", `Created shared folder ${share.label}/${folder}`, {
     share: share.label,
     folder,
@@ -613,7 +735,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
   const route = segments(url);
 
   if (method === "GET" && route.join("/") === "api/summary") {
-    sendJson(res, 200, await buildSummary(config));
+    sendJson(res, 200, await buildSummary(config, { waitForRemote: url.searchParams.get("full") === "1", checkPending: url.searchParams.get("pending") === "1" }));
     return;
   }
 
@@ -660,6 +782,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       ignorePathPrefixes: Array.isArray(body.ignorePathPrefixes) ? body.ignorePathPrefixes.map((item) => String(item)) : undefined,
     });
     const initialSync = await syncShare(config, share);
+    remoteSnapshot = null;
     await recordActivity("share_added", `Added shared folder ${share.label}`, {
       localDir: share.localDir,
       space: share.space,
@@ -703,6 +826,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       throw new UiError(404, "share_not_found", "Shared folder was not found.");
     }
     const result = await syncShare(config, share);
+    remoteSnapshot = null;
     await recordActivity("sync", `Synced shared folder ${share.label}`, {
       label: share.label,
       summary: result.summary,
@@ -736,6 +860,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       body,
       `${config.deviceId}:${space}:desktop-drop:${filePath}:${randomUUID()}`,
     );
+    remoteSnapshot = null;
     await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space, path: filePath, size: body.byteLength });
     sendJson(res, 201, { file: uploaded });
     return;
@@ -751,6 +876,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
     for (const localPath of paths) {
       results.push(await ingestLocalPath(config, localPath));
     }
+    remoteSnapshot = null;
     sendJson(res, 201, { results });
     return;
   }
@@ -1899,10 +2025,10 @@ function renderHtml(): string {
         const serverName = summary.server?.name || "Mac Mini Vault Server";
         const serverStatus = summary.server?.status || "online";
         $("connection").textContent = serverName + " / " + summary.defaultSpace + " / autosync";
-        $("pending").textContent = totalPending + " pending";
+        $("pending").textContent = summary.remoteIndexing ? "indexing" : totalPending + " pending";
         $("deviceScope").textContent = summary.devicesPresenceVisible ? "presence" : "local";
         const sources = allSources();
-        $("shareCount").textContent = sources.length + (sources.length === 1 ? " source" : " sources") + " / autosync on";
+        $("shareCount").textContent = sources.length + (sources.length === 1 ? " source" : " sources") + (summary.remoteIndexing ? " / indexing vault" : " / autosync on");
         $("shares").innerHTML = sources.length ? sources.map((source) => {
           const isLocal = source.sourceKind === "local";
           const selected = source.sourceId === state.selectedSourceId;
@@ -1927,7 +2053,7 @@ function renderHtml(): string {
               '<span>/</span>' +
               '<span>' + source.remoteFileCount + ' remote / ' + fmtSize(source.remoteSize) + '</span>' +
               '<span>/</span>' +
-              '<span>' + pendingText + '</span>' +
+              '<span>' + (source.pendingChecked === false ? "sync check deferred" : pendingText) + '</span>' +
               '<span>/</span>' +
               actions +
             '</div>' +
@@ -2334,6 +2460,9 @@ function renderHtml(): string {
         renderOffline(error.message);
         toast(error.message);
       });
+      window.setInterval(() => {
+        refresh().catch((error) => renderOffline(error.message));
+      }, 8000);
     </script>
   </body>
 </html>`;

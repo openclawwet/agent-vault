@@ -119,7 +119,7 @@ try {
   });
   assert(ingest.status === 201, `native path ingest failed with ${ingest.status}`);
 
-  const summary = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/summary`);
+  const summary = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/summary?full=1&pending=1`);
   assert(summary.ok, "summary failed");
   const summaryJson = await expectJson(summary);
   const activity = summaryJson.activity as unknown[] | undefined;

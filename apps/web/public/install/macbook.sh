@@ -20,6 +20,8 @@ need_command curl
 need_command tar
 need_command node
 
+NODE_BIN="$(command -v node)"
+
 if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" ]]; then
   echo "Unsafe install directory." >&2
   exit 1
@@ -60,19 +62,20 @@ if [[ -d "$APP_SOURCE" ]]; then
   chmod +x "$APP_TARGET/Contents/MacOS/AgentVault" 2>/dev/null || true
 fi
 
-cat >"$INSTALL_DIR/bin/agent-vault-sync" <<'SCRIPT'
+cat >"$INSTALL_DIR/bin/agent-vault-sync" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
-SOURCE="${BASH_SOURCE[0]}"
-while [[ -L "$SOURCE" ]]; do
-  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
-  SOURCE="$(readlink "$SOURCE")"
-  if [[ "$SOURCE" != /* ]]; then
-    SOURCE="$SOURCE_DIR/$SOURCE"
+NODE_BIN="$NODE_BIN"
+SOURCE="\${BASH_SOURCE[0]}"
+while [[ -L "\$SOURCE" ]]; do
+  SOURCE_DIR="\$(cd -P "\$(dirname "\$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="\$(readlink "\$SOURCE")"
+  if [[ "\$SOURCE" != /* ]]; then
+    SOURCE="\$SOURCE_DIR/\$SOURCE"
   fi
 done
-ROOT_DIR="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
-exec node "$ROOT_DIR/apps/mac-sync/dist/cli.js" "$@"
+ROOT_DIR="\$(cd -P "\$(dirname "\$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+exec "\$NODE_BIN" "\$ROOT_DIR/apps/mac-sync/dist/cli.js" "\$@"
 SCRIPT
 chmod +x "$INSTALL_DIR/bin/agent-vault-sync"
 ln -sfn "$INSTALL_DIR/bin/agent-vault-sync" "$HOME/.agent-vault/bin/agent-vault-sync"
@@ -99,7 +102,7 @@ fi
   --dir "$SYNC_DIR" \
   --space "$SYNC_SPACE" >/dev/null
 
-"$INSTALL_DIR/bin/agent-vault-sync" status
+curl -fsSL "$SERVER_URL/health" >/dev/null
 
 cat <<EOF
 
