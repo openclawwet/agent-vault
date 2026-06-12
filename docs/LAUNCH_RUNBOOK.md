@@ -97,9 +97,12 @@ pnpm --filter @agent-vault/mac-sync exec agent-vault-sync status
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync push
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync pull
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync watch
+pnpm --filter @agent-vault/mac-sync exec agent-vault-sync ui
 ```
 
 Conflicts are written under `~/AgentVault/.agent-vault/conflicts` instead of overwriting edits.
+
+The desktop UI runs locally on the device that starts it. It opens `http://127.0.0.1:4786/desktop`, stores shared-folder registrations under `~/.agent-vault/shares.json`, keeps the Vault token out of the browser bundle, and mirrors each shared folder under its own Vault prefix so multiple folders do not collide.
 
 ## Phone PWA over Tailscale
 
@@ -172,6 +175,7 @@ pnpm build
 pnpm smoke:local
 pnpm smoke:sync
 pnpm smoke:mac-sync
+pnpm smoke:desktop-ui
 pnpm smoke:web
 pnpm smoke:three-device
 ```

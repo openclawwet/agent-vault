@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "smoke": "pnpm build && node --disable-warning=ExperimentalWarning dist/smoke.js",
-    "smoke:three-device": "pnpm build && node --disable-warning=ExperimentalWarning dist/qaSmoke.js"
+    "smoke:three-device": "pnpm build && node --disable-warning=ExperimentalWarning dist/qaSmoke.js",
+    "smoke:ui": "pnpm build && node --disable-warning=ExperimentalWarning dist/uiSmoke.js"
   },
   "dependencies": {
     "@agent-vault/core": "workspace:*",

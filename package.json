@@ -9,6 +9,7 @@
     "smoke:local": "pnpm --filter @agent-vault/server smoke:local",
     "smoke:sync": "pnpm --filter @agent-vault/sync smoke",
     "smoke:mac-sync": "pnpm --filter @agent-vault/mac-sync smoke",
+    "smoke:desktop-ui": "pnpm --filter @agent-vault/mac-sync smoke:ui",
     "smoke:three-device": "pnpm --filter @agent-vault/mac-sync smoke:three-device",
     "smoke:web": "pnpm --filter @agent-vault/web smoke",
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs",

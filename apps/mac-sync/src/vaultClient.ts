@@ -1,4 +1,4 @@
-import type { ListFilesResult, VaultFileRecord } from "@agent-vault/core";
+import type { ChangeEventRecord, ListFilesResult, ListSpacesResult, SpaceAccessInfo, VaultFileRecord } from "@agent-vault/core";
 
 export class VaultClient {
   constructor(
@@ -10,6 +10,17 @@ export class VaultClient {
     const response = await this.request(`/spaces/${encodeURIComponent(space)}/files`);
     const body = (await response.json()) as ListFilesResult;
     return body.files;
+  }
+
+  async listSpaces(): Promise<SpaceAccessInfo[]> {
+    const response = await this.request("/spaces");
+    const body = (await response.json()) as ListSpacesResult;
+    return body.spaces;
+  }
+
+  async listChanges(space: string, since = 0): Promise<{ changes: ChangeEventRecord[]; cursor: number }> {
+    const response = await this.request(`/spaces/${encodeURIComponent(space)}/changes?since=${encodeURIComponent(String(since))}`);
+    return (await response.json()) as { changes: ChangeEventRecord[]; cursor: number };
   }
 
   async upload(space: string, filePath: string, body: Buffer, idempotencyKey: string): Promise<VaultFileRecord> {

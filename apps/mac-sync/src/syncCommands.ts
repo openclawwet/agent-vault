@@ -30,6 +30,44 @@ function byPath<T extends { path: string }>(entries: T[]): Map<string, T> {
   return new Map(entries.map((entry) => [entry.path, entry]));
 }
 
+function normalizedRemotePrefix(config: MacSyncConfig): string {
+  const raw = config.remotePathPrefix?.replaceAll("\\", "/").trim() ?? "";
+  const segments = raw
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error("Remote path prefix must not contain relative path segments.");
+  }
+  return segments.join("/");
+}
+
+function remotePath(config: MacSyncConfig, filePath: string): string {
+  const prefix = normalizedRemotePrefix(config);
+  return prefix ? `${prefix}/${filePath}` : filePath;
+}
+
+function localPathFromRemote(config: MacSyncConfig, filePath: string): string | undefined {
+  const prefix = normalizedRemotePrefix(config);
+  if (!prefix) {
+    return filePath;
+  }
+  if (!filePath.startsWith(`${prefix}/`)) {
+    return undefined;
+  }
+  return filePath.slice(prefix.length + 1);
+}
+
+async function listScopedRemoteFiles(config: MacSyncConfig, vault: VaultClient) {
+  const remote = await vault.listFiles(config.space);
+  return remote
+    .map((entry) => {
+      const scopedPath = localPathFromRemote(config, entry.path);
+      return scopedPath ? { ...entry, path: scopedPath } : undefined;
+    })
+    .filter((entry): entry is Awaited<ReturnType<VaultClient["listFiles"]>>[number] => Boolean(entry));
+}
+
 function idempotencyKey(config: MacSyncConfig, operation: string, filePath: string, hash?: string): string {
   return `${config.deviceId}:${config.space}:${operation}:${filePath}:${hash ?? "none"}`;
 }
@@ -45,7 +83,8 @@ export async function scanCommand(config: MacSyncConfig): Promise<LocalFileEntry
 export async function statusCommand(config: MacSyncConfig): Promise<{ actions: ReturnType<typeof planSync> }> {
   const local = await scanLocal(config.localDir);
   const state = await readState(config.localDir);
-  const remote = await client(config).listFiles(config.space);
+  const vault = client(config);
+  const remote = await listScopedRemoteFiles(config, vault);
   const actions = planSync({
     local: local.map((entry) => ({
       path: entry.path,
@@ -65,7 +104,7 @@ export async function pushCommand(config: MacSyncConfig): Promise<SyncSummary> {
   const vault = client(config);
   const local = await scanLocal(config.localDir);
   const localMap = byPath(local);
-  const remote = await vault.listFiles(config.space);
+  const remote = await listScopedRemoteFiles(config, vault);
   const remoteMap = byPath(remote);
   const state = await readState(config.localDir);
   const summary: SyncSummary = { pushed: 0, pulled: 0, deleted: 0, conflicts: 0, scanned: local.length };
@@ -89,7 +128,8 @@ export async function pushCommand(config: MacSyncConfig): Promise<SyncSummary> {
       });
       continue;
     }
-    await vault.delete(config.space, filePath, idempotencyKey(config, "delete", filePath, known.baseHash ?? undefined));
+    const targetPath = remotePath(config, filePath);
+    await vault.delete(config.space, targetPath, idempotencyKey(config, "delete", targetPath, known.baseHash ?? undefined));
     delete state.files[filePath];
     summary.deleted += 1;
   }
@@ -113,7 +153,8 @@ export async function pushCommand(config: MacSyncConfig): Promise<SyncSummary> {
 
     if (!remoteFile || remoteFile.sha256 !== entry.hash) {
       const body = await readFile(path.join(config.localDir, ...entry.path.split("/")));
-      const uploaded = await vault.upload(config.space, entry.path, body, idempotencyKey(config, "upload", entry.path, entry.hash));
+      const targetPath = remotePath(config, entry.path);
+      const uploaded = await vault.upload(config.space, targetPath, body, idempotencyKey(config, "upload", targetPath, entry.hash));
       state.files[entry.path] = { baseHash: uploaded.sha256 };
       summary.pushed += 1;
     }
@@ -127,7 +168,7 @@ export async function pullCommand(config: MacSyncConfig): Promise<SyncSummary> {
   const vault = client(config);
   const local = await scanLocal(config.localDir);
   const localMap = byPath(local);
-  const remote = await vault.listFiles(config.space);
+  const remote = await listScopedRemoteFiles(config, vault);
   const remoteMap = byPath(remote);
   const state = await readState(config.localDir);
   const summary: SyncSummary = { pushed: 0, pulled: 0, deleted: 0, conflicts: 0, scanned: local.length };
@@ -149,7 +190,7 @@ export async function pullCommand(config: MacSyncConfig): Promise<SyncSummary> {
     }
 
     if (!localFile || localFile.hash !== remoteFile.sha256) {
-      const body = await vault.download(config.space, remoteFile.path);
+      const body = await vault.download(config.space, remotePath(config, remoteFile.path));
       await writeLocalFile(config.localDir, remoteFile.path, body);
       state.files[remoteFile.path] = { baseHash: remoteFile.sha256 };
       summary.pulled += 1;

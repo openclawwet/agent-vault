@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { initConfig, loadConfig } from "./config.js";
 import { pullCommand, pushCommand, scanCommand, statusCommand, watchCommand } from "./syncCommands.js";
+import { startDesktopUi } from "./uiServer.js";
 
 function flags(args: string[]): Record<string, string> {
   const result: Record<string, string> = {};
@@ -50,6 +51,19 @@ if (command === "init") {
     console.log(JSON.stringify(await pullCommand(config), null, 2));
   } else if (command === "watch") {
     await watchCommand(config);
+  } else if (command === "ui") {
+    const started = await startDesktopUi(config, {
+      port: options.port ? Number.parseInt(options.port, 10) : undefined,
+      open: options.open !== "false" && options["no-open"] !== "true",
+    });
+    console.log(`Agent Vault desktop UI: ${started.url}`);
+    process.once("SIGINT", () => {
+      void started.close().finally(() => process.exit(0));
+    });
+    process.once("SIGTERM", () => {
+      void started.close().finally(() => process.exit(0));
+    });
+    await new Promise(() => undefined);
   } else {
     throw new Error(`Unknown command: ${command}`);
   }

@@ -84,9 +84,12 @@ pnpm --filter @agent-vault/mac-sync exec agent-vault-sync status
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync push
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync pull
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync watch
+pnpm --filter @agent-vault/mac-sync exec agent-vault-sync ui
 ```
 
 The CLI keeps sync metadata under `.agent-vault` inside the selected folder and writes conflict review files there instead of overwriting divergent edits.
+
+The desktop UI is served locally by the sync client at `http://127.0.0.1:4786/desktop`. It keeps the device token server-side, lets the user add shared folders, sync each folder into a prefixed Vault path, upload dropped files into `Desktop Drops`, open folders in Finder, and inspect recent local activity plus Vault structure.
 
 ## Phone PWA
 

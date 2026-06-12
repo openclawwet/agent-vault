@@ -94,4 +94,5 @@ Daily commands:
   "$HOME/.agent-vault/bin/agent-vault-sync" push
   "$HOME/.agent-vault/bin/agent-vault-sync" pull
   "$HOME/.agent-vault/bin/agent-vault-sync" watch
+  "$HOME/.agent-vault/bin/agent-vault-sync" ui
 EOF
