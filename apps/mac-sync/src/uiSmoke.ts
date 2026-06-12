@@ -56,9 +56,19 @@ try {
   assert(html.includes('id="devices"'), "desktop UI HTML missing devices section");
   assert(html.includes('id="flow"'), "desktop UI HTML missing flow section");
   assert(html.includes('id="treeSection"'), "desktop UI HTML missing tree inspector");
+  assert(html.includes('id="folderBrowser"'), "desktop UI HTML missing Finder-style folder browser");
+  assert(html.includes('data-view-mode="grid"'), "desktop UI HTML missing icon view mode");
+  assert(html.includes('data-view-mode="large"'), "desktop UI HTML missing large icon view mode");
+  assert(html.includes('data-view-mode="list"'), "desktop UI HTML missing list view mode");
+  assert(html.includes('id="folderNew"'), "desktop UI HTML missing in-folder create action");
+  assert(html.includes("/api/folder-entries"), "desktop UI HTML missing lazy folder entries endpoint");
+  assert(html.includes('data-file-action="open"'), "desktop UI HTML missing file open action");
+  assert(html.includes('data-file-action="download"'), "desktop UI HTML missing file download action");
+  assert(html.includes("activateFolderEntry"), "desktop UI HTML missing Finder-style entry activation");
   assert(html.includes('data-side-mode="tree"'), "desktop UI HTML missing tree/system switch");
   assert(html.includes('data-access'), "desktop UI HTML missing permission controls");
   assert(html.includes("data-download-path"), "desktop UI HTML missing file download action");
+  assert(html.includes("DownloadURL"), "desktop UI HTML missing drag-out download payload");
   assert(!html.includes('id="openFolder"'), "desktop UI should not render the old top open button");
   assert(!html.includes("dropzone"), "desktop UI should not render the old dropzone");
 
@@ -107,6 +117,14 @@ try {
   assert(downloaded.size === "client brief\n".length, "downloaded size mismatch");
   assert((await readFile(downloaded.targetPath, "utf8")) === "client brief\n", "downloaded file content mismatch");
 
+  const folderEntries = await fetch(
+    `${startedUi.url.replace(/\/desktop$/, "")}/api/folder-entries?space=MacBook%20Shared&prefix=Client%20Docs&folder=`,
+  );
+  assert(folderEntries.status === 200, `folder entries failed with ${folderEntries.status}`);
+  const folderEntriesJson = await expectJson(folderEntries);
+  const entries = folderEntriesJson.entries as Array<{ name?: string; kind?: string; size?: number }> | undefined;
+  assert(entries?.some((entry) => entry.name === "brief.txt" && entry.kind === "file"), "folder entries should include shared file");
+
   const folder = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares/${share.id}/folders`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -146,6 +164,11 @@ try {
   assert(shares?.some((item) => item.label === "Client Docs" && item.access === "readonly"), "summary should include updated share access");
   assert(shares?.some((item) => item.label === "Dropped Docs"), "summary should include natively dropped folder share");
   assert(shares?.some((item) => Array.isArray(item.remoteTree)), "summary should include tree data");
+  const clientDocsTree = shares?.find((item) => item.label === "Client Docs")?.remoteTree as Array<{ name?: string; kind?: string }> | undefined;
+  assert(
+    clientDocsTree?.some((node) => node.name === "Research Notes" && node.kind === "folder"),
+    "empty shared folder marker should render as a folder node",
+  );
 
   console.log("Agent Vault desktop UI smoke passed.");
 } finally {

@@ -48,6 +48,17 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
+function sendDownload(res: ServerResponse, body: Buffer, filePath: string): void {
+  const filename = path.basename(filePath).replaceAll('"', "");
+  res.writeHead(200, {
+    "content-type": "application/octet-stream",
+    "content-length": body.byteLength,
+    "content-disposition": `attachment; filename="${filename || "agent-vault-file"}"`,
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
 function sendHtml(res: ServerResponse): void {
   const payload = Buffer.from(renderHtml());
   res.writeHead(200, {
@@ -227,6 +238,7 @@ interface TreeNode {
 interface TreeFile {
   path: string;
   size: number;
+  folderMarker?: boolean;
 }
 
 function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
@@ -244,7 +256,16 @@ function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
       return { path: cleanPath, size: file.size };
     })
     .filter((file): file is TreeFile => Boolean(file))
-    .filter((file) => file.path && !file.path.endsWith("/.agent-vault-folder"))
+    .map((file) => {
+      const isFolderMarker = file.path === ".agent-vault-folder" || file.path.endsWith("/.agent-vault-folder");
+      if (!isFolderMarker) return file;
+      return {
+        path: file.path.replace(/\/?\.agent-vault-folder$/, ""),
+        size: 0,
+        folderMarker: true,
+      };
+    })
+    .filter((file) => file.path)
     .sort((a, b) => a.path.localeCompare(b.path));
 
   for (const file of scoped) {
@@ -254,11 +275,11 @@ function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
     }
     const parts = file.path.split("/").filter(Boolean);
     let cursor = root;
-    cursor.count += 1;
+    cursor.count += file.folderMarker ? 0 : 1;
     cursor.size += file.size;
     for (let index = 0; index < parts.length; index += 1) {
       const part = parts[index]!;
-      const isFile = index === parts.length - 1;
+      const isFile = index === parts.length - 1 && !file.folderMarker;
       cursor.children ??= [];
       let child = cursor.children.find((item) => item.name === part && item.kind === (isFile ? "file" : "folder"));
       if (!child) {
@@ -274,7 +295,7 @@ function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
         cursor.children.push(child);
         nodeCount += 1;
       }
-      child.count += 1;
+      child.count += file.folderMarker ? 0 : 1;
       child.size += file.size;
       cursor = child;
     }
@@ -287,6 +308,70 @@ function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
   }
 
   return sortNodes(root.children);
+}
+
+function safeOptionalRemotePath(value: string): string {
+  const cleaned = value.replaceAll("\\", "/").trim();
+  if (!cleaned) return "";
+  const parts = cleaned
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (parts.some((part) => part === "." || part === ".." || part.includes("\0"))) {
+    throw new UiError(400, "invalid_path", "Vault path is invalid.");
+  }
+  return parts.join("/");
+}
+
+function immediateFolderEntries(files: TreeFile[], prefix = "", folder = "", maxEntries = 5000): TreeNode[] {
+  const cleanPrefix = safeOptionalRemotePath(prefix);
+  const cleanFolder = safeOptionalRemotePath(folder);
+  const children = new Map<string, TreeNode>();
+
+  for (const file of files) {
+    const cleanPath = file.path.replaceAll("\\", "/").replace(/^\/+/, "");
+    if (cleanPrefix) {
+      if (cleanPath === cleanPrefix) continue;
+      if (!cleanPath.startsWith(`${cleanPrefix}/`)) continue;
+    }
+
+    const sourcePath = cleanPrefix ? cleanPath.slice(cleanPrefix.length + 1) : cleanPath;
+    if (cleanFolder) {
+      if (sourcePath === cleanFolder) continue;
+      if (!sourcePath.startsWith(`${cleanFolder}/`)) continue;
+    }
+
+    const folderPath = cleanFolder ? sourcePath.slice(cleanFolder.length + 1) : sourcePath;
+    const parts = folderPath.split("/").filter(Boolean);
+    if (!parts.length) continue;
+
+    const isFolderMarker = parts[parts.length - 1] === ".agent-vault-folder";
+    if (isFolderMarker && parts.length === 1) continue;
+
+    const childName = parts[0]!;
+    const isDirectFile = parts.length === 1 && !isFolderMarker;
+    const kind: TreeNodeKind = isDirectFile ? "file" : "folder";
+    const key = `${kind}\0${childName}`;
+    const existing =
+      children.get(key) ?? {
+        name: childName,
+        path: cleanFolder ? `${cleanFolder}/${childName}` : childName,
+        kind,
+        count: 0,
+        size: 0,
+        children: kind === "folder" ? [] : undefined,
+      };
+    existing.count += isFolderMarker ? 0 : 1;
+    existing.size += isFolderMarker ? 0 : file.size;
+    children.set(key, existing);
+
+    if (children.size >= maxEntries) {
+      existing.truncated = true;
+      break;
+    }
+  }
+
+  return [...children.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
 }
 
 function remoteSourcePrefix(filePath: string): { label: string; prefix: string; origin: string } | undefined {
@@ -681,7 +766,9 @@ async function downloadRemoteFile(config: MacSyncConfig, input: Record<string, u
   const targetPath = path.join(downloadRoot(), space, ...filePath.split("/"));
   await mkdir(path.dirname(targetPath), { recursive: true });
   await writeFile(targetPath, body);
-  if (input.reveal !== false) {
+  if (input.open === true) {
+    openPath(targetPath);
+  } else if (input.reveal !== false) {
     revealPath(targetPath);
   }
   remoteSnapshot = null;
@@ -819,6 +906,29 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
   if (method === "POST" && route.join("/") === "api/download-remote") {
     const body = await readJson(req);
     sendJson(res, 200, { download: await downloadRemoteFile(config, body) });
+    return;
+  }
+
+  if (method === "GET" && route.join("/") === "api/folder-entries") {
+    const space = safeDownloadSpace(String(url.searchParams.get("space") ?? config.space));
+    const prefix = safeOptionalRemotePath(String(url.searchParams.get("prefix") ?? ""));
+    const folder = safeOptionalRemotePath(String(url.searchParams.get("folder") ?? ""));
+    const files = await new VaultClient(config.serverUrl, config.token).listFiles(space);
+    sendJson(res, 200, {
+      space,
+      prefix,
+      folder,
+      entries: immediateFolderEntries(files, prefix, folder),
+      indexedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  if (method === "GET" && route.join("/") === "api/raw-download") {
+    const space = safeDownloadSpace(String(url.searchParams.get("space") ?? config.space));
+    const filePath = safeRemoteFilePath(String(url.searchParams.get("path") ?? ""));
+    const body = await new VaultClient(config.serverUrl, config.token).download(space, filePath);
+    sendDownload(res, body, filePath);
     return;
   }
 
@@ -1254,20 +1364,33 @@ function renderHtml(): string {
         font-size: 11px;
         font-weight: 480;
       }
-      .source-field {
+      .file-workspace {
         position: relative;
         height: calc(100% - 76px);
         min-height: 390px;
         margin-top: 31px;
+        display: grid;
+        grid-template-columns: minmax(230px, 0.34fr) minmax(0, 1fr);
+        gap: clamp(18px, 3vw, 34px);
         overflow: hidden;
+      }
+      .source-field {
+        min-height: 0;
+        overflow: auto;
+        padding: 4px 10px 20px 0;
       }
       .source-cluster {
         position: relative;
-        height: 100%;
+        min-height: 100%;
+        display: grid;
+        align-content: start;
+        gap: 18px;
       }
       .source {
-        position: absolute;
-        width: min(290px, 42vw);
+        position: relative;
+        left: auto !important;
+        top: auto !important;
+        width: min(290px, 100%);
         min-height: 96px;
         padding-left: 74px;
         border-radius: 12px;
@@ -1393,12 +1516,369 @@ function renderHtml(): string {
         color: var(--danger);
       }
       .source.empty {
-        left: 12%;
-        top: 23%;
         width: min(420px, 70vw);
         padding-left: 0;
         color: rgba(237, 230, 218, 0.42);
         font-size: 14px;
+        line-height: 1.45;
+      }
+      .folder-browser {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 14px;
+        border: 1px solid rgba(237, 230, 218, 0.072);
+        border-radius: 13px;
+        background: rgba(55, 54, 50, 0.28);
+        padding: 15px;
+        overflow: hidden;
+        backdrop-filter: blur(20px) saturate(1.03);
+        -webkit-backdrop-filter: blur(20px) saturate(1.03);
+      }
+      .folder-browser__head {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 14px;
+        align-items: start;
+      }
+      .folder-browser__title {
+        margin: 0;
+        color: rgba(237, 230, 218, 0.91);
+        font-size: 20px;
+        line-height: 1.08;
+        font-weight: 580;
+        overflow-wrap: anywhere;
+      }
+      .folder-browser__meta {
+        margin-top: 6px;
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .folder-browser__tools,
+      .view-toggle,
+      .folder-browser__crumbs {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .folder-browser__tools {
+        justify-content: flex-end;
+      }
+      .view-toggle {
+        padding: 3px;
+        border: 1px solid rgba(237, 230, 218, 0.08);
+        border-radius: 999px;
+        background: rgba(22, 22, 20, 0.22);
+      }
+      .view-toggle button,
+      .crumb-button,
+      .up-button,
+      .folder-create-button {
+        border: 0;
+        color: rgba(237, 230, 218, 0.48);
+        background: transparent;
+        cursor: pointer;
+        transition: color 140ms ease, background 140ms ease;
+      }
+      .view-toggle button {
+        width: 25px;
+        height: 22px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+      }
+      .view-toggle button.active {
+        color: rgba(237, 230, 218, 0.88);
+        background: rgba(237, 230, 218, 0.08);
+      }
+      .view-toggle button:hover,
+      .crumb-button:hover,
+      .up-button:hover,
+      .folder-create-button:hover {
+        color: rgba(237, 230, 218, 0.84);
+      }
+      .view-glyph {
+        width: 13px;
+        height: 13px;
+        display: block;
+        position: relative;
+      }
+      .view-glyph.grid {
+        background:
+          linear-gradient(currentColor 0 0) 0 0 / 5px 5px,
+          linear-gradient(currentColor 0 0) 8px 0 / 5px 5px,
+          linear-gradient(currentColor 0 0) 0 8px / 5px 5px,
+          linear-gradient(currentColor 0 0) 8px 8px / 5px 5px;
+        background-repeat: no-repeat;
+        opacity: 0.86;
+      }
+      .view-glyph.large {
+        border: 1.5px solid currentColor;
+        border-radius: 3px;
+      }
+      .view-glyph.large::after {
+        content: "";
+        position: absolute;
+        left: 2px;
+        right: 2px;
+        bottom: 2px;
+        height: 1.5px;
+        background: currentColor;
+        opacity: 0.75;
+      }
+      .view-glyph.list::before,
+      .view-glyph.list::after,
+      .view-glyph.list {
+        border-top: 1.5px solid currentColor;
+      }
+      .view-glyph.list::before,
+      .view-glyph.list::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+      }
+      .view-glyph.list::before { top: 5px; }
+      .view-glyph.list::after { top: 10px; }
+      .folder-browser__crumbs {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        color: var(--faint);
+        font-size: 11px;
+      }
+      .crumb-button,
+      .up-button,
+      .folder-create-button {
+        min-height: 22px;
+        padding: 0 5px;
+        border-radius: 7px;
+        font-size: 11px;
+      }
+      .folder-create-button:disabled,
+      .up-button:disabled {
+        color: rgba(237, 230, 218, 0.2);
+        cursor: default;
+      }
+      .crumb-sep {
+        color: rgba(237, 230, 218, 0.25);
+      }
+      .folder-items {
+        min-height: 0;
+        overflow: auto;
+        padding: 2px 4px 12px 0;
+      }
+      .folder-items.grid,
+      .folder-items.large {
+        display: grid;
+        align-content: start;
+        grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+        gap: 13px;
+      }
+      .folder-items.large {
+        grid-template-columns: repeat(auto-fill, minmax(162px, 1fr));
+        gap: 16px;
+      }
+      .folder-items.list {
+        display: grid;
+        align-content: start;
+        gap: 2px;
+      }
+      .folder-item {
+        min-width: 0;
+        border: 1px solid transparent;
+        color: rgba(237, 230, 218, 0.72);
+        background: transparent;
+        cursor: default;
+        transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 140ms ease;
+      }
+      .folder-item.grid,
+      .folder-item.large {
+        min-height: 126px;
+        display: grid;
+        grid-template-rows: auto minmax(0, auto) auto auto;
+        justify-items: center;
+        gap: 9px;
+        border-radius: 10px;
+        padding: 13px 9px 10px;
+        text-align: center;
+      }
+      .folder-item.large {
+        min-height: 166px;
+        padding-top: 18px;
+      }
+      .folder-item.list {
+        min-height: 34px;
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) auto auto auto;
+        gap: 10px;
+        align-items: center;
+        border-radius: 8px;
+        padding: 4px 8px;
+      }
+      .folder-item:hover,
+      .folder-item.selected {
+        color: rgba(237, 230, 218, 0.9);
+        background: rgba(237, 230, 218, 0.055);
+        border-color: rgba(237, 230, 218, 0.08);
+      }
+      .folder-item:active {
+        transform: translateY(1px);
+      }
+      .file-icon {
+        width: 44px;
+        height: 48px;
+        position: relative;
+        display: block;
+        color: rgba(237, 230, 218, 0.75);
+      }
+      .folder-item.large .file-icon {
+        width: 68px;
+        height: 72px;
+      }
+      .folder-item.list .file-icon {
+        width: 20px;
+        height: 22px;
+      }
+      .file-icon::before,
+      .file-icon::after {
+        content: "";
+        position: absolute;
+      }
+      .file-icon.folder::before {
+        left: 2px;
+        right: 2px;
+        bottom: 5px;
+        height: 31px;
+        border: 1.5px solid rgba(237, 230, 218, 0.2);
+        border-radius: 7px;
+        background: rgba(237, 230, 218, 0.095);
+      }
+      .file-icon.folder::after {
+        left: 7px;
+        top: 7px;
+        width: 22px;
+        height: 9px;
+        border: 1.5px solid rgba(237, 230, 218, 0.16);
+        border-bottom: 0;
+        border-radius: 5px 5px 0 0;
+        background: rgba(237, 230, 218, 0.075);
+      }
+      .file-icon.file::before {
+        inset: 3px 7px 4px 8px;
+        border: 1.5px solid rgba(237, 230, 218, 0.22);
+        border-radius: 5px;
+        background: rgba(237, 230, 218, 0.06);
+      }
+      .file-icon.file::after {
+        right: 7px;
+        top: 3px;
+        width: 12px;
+        height: 12px;
+        clip-path: polygon(0 0, 100% 100%, 0 100%);
+        background: rgba(237, 230, 218, 0.16);
+      }
+      .file-icon.image::before { background: rgba(180, 200, 162, 0.11); }
+      .file-icon.pdf::before { background: rgba(195, 143, 130, 0.12); }
+      .file-icon.text::before { background: rgba(208, 194, 170, 0.12); }
+      .file-icon.video::before,
+      .file-icon.audio::before { background: rgba(215, 188, 134, 0.11); }
+      .file-ext {
+        position: absolute;
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        max-width: 31px;
+        color: rgba(237, 230, 218, 0.54);
+        font-size: 8px;
+        line-height: 1;
+        font-weight: 620;
+        text-transform: uppercase;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .folder-item.list .file-ext {
+        display: none;
+      }
+      .folder-item__name {
+        width: 100%;
+        min-width: 0;
+        color: inherit;
+        font-size: 11.5px;
+        line-height: 1.24;
+        overflow-wrap: anywhere;
+      }
+      .folder-item.grid .folder-item__name,
+      .folder-item.large .folder-item__name {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .folder-item.list .folder-item__name {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-align: left;
+      }
+      .folder-item__meta,
+      .folder-item__kind {
+        color: var(--faint);
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+      .folder-item__kind {
+        text-transform: lowercase;
+      }
+      .folder-item__actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        opacity: 0;
+        transition: opacity 140ms ease;
+      }
+      .folder-item:hover .folder-item__actions,
+      .folder-item:focus-within .folder-item__actions,
+      .folder-item.selected .folder-item__actions {
+        opacity: 1;
+      }
+      .folder-item__action {
+        width: 23px;
+        height: 21px;
+        border: 1px solid rgba(237, 230, 218, 0.075);
+        border-radius: 7px;
+        display: inline-grid;
+        place-items: center;
+        padding: 0;
+        color: rgba(237, 230, 218, 0.42);
+        background: rgba(22, 22, 20, 0.18);
+        cursor: pointer;
+      }
+      .folder-item__action:hover {
+        color: rgba(237, 230, 218, 0.86);
+        background: rgba(237, 230, 218, 0.065);
+      }
+      .folder-item__action .tiny-icon {
+        margin: 0;
+        vertical-align: 0;
+      }
+      .folder-item.list .folder-item__actions {
+        opacity: 1;
+      }
+      .folder-empty {
+        min-height: 100%;
+        display: grid;
+        place-items: center;
+        color: var(--faint);
+        font-size: 12px;
+        text-align: center;
         line-height: 1.45;
       }
       .paste-path {
@@ -1875,11 +2355,12 @@ function renderHtml(): string {
           grid-template-columns: 1fr 1fr;
           grid-template-rows: minmax(260px, auto);
         }
-        .source-field {
+        .file-workspace {
+          grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
           min-height: 520px;
         }
         .source {
-          width: min(290px, 72vw);
+          width: 100%;
         }
       }
       @media (max-width: 760px) {
@@ -1897,16 +2378,25 @@ function renderHtml(): string {
         .system-sections {
           grid-template-columns: 1fr;
         }
-        .source:nth-child(n) {
-          position: relative;
-          left: auto;
-          top: auto;
-          margin: 0 0 34px;
+        .file-workspace {
+          height: auto;
+          min-height: 0;
+          grid-template-columns: 1fr;
+          overflow: visible;
         }
         .source-field {
           height: auto;
           min-height: 0;
           overflow: visible;
+        }
+        .folder-browser {
+          min-height: 430px;
+        }
+        .folder-browser__head {
+          grid-template-columns: 1fr;
+        }
+        .folder-browser__tools {
+          justify-content: flex-start;
         }
         .schema-head {
           align-items: flex-start;
@@ -1941,8 +2431,29 @@ function renderHtml(): string {
           <section class="stage">
             <p class="micro-kicker">shared sources</p>
             <div class="stage-meta" id="shareCount">0 sources</div>
-            <div class="source-field" id="dropSurface">
-              <div class="source-cluster" id="shares"></div>
+            <div class="file-workspace" id="dropSurface">
+              <div class="source-field">
+                <div class="source-cluster" id="shares"></div>
+              </div>
+              <section class="folder-browser" id="folderBrowser" aria-label="Folder contents">
+                <div class="folder-browser__head">
+                  <div>
+                    <h2 class="folder-browser__title" id="folderTitle">Select a source</h2>
+                    <div class="folder-browser__meta" id="folderMeta">Double-click folders to open them.</div>
+                  </div>
+                  <div class="folder-browser__tools">
+                    <button class="folder-create-button" id="folderNew" type="button">new folder</button>
+                    <button class="up-button" id="folderUp" type="button">up</button>
+                    <div class="view-toggle" aria-label="View mode">
+                      <button type="button" data-view-mode="grid" class="active" title="Icon view" aria-label="Icon view"><span class="view-glyph grid" aria-hidden="true"></span></button>
+                      <button type="button" data-view-mode="large" title="Large icon view" aria-label="Large icon view"><span class="view-glyph large" aria-hidden="true"></span></button>
+                      <button type="button" data-view-mode="list" title="List view" aria-label="List view"><span class="view-glyph list" aria-hidden="true"></span></button>
+                    </div>
+                  </div>
+                </div>
+                <div class="folder-browser__crumbs" id="folderCrumbs"></div>
+                <div class="folder-items grid" id="folderItems"></div>
+              </section>
             </div>
             <form class="paste-path" id="pathForm">
               <input id="pathInput" placeholder="paste a local folder path" />
@@ -2017,6 +2528,11 @@ function renderHtml(): string {
         view: "vault",
         selectedSourceId: null,
         sideMode: "system",
+        viewMode: "grid",
+        folderBySource: {},
+        folderEntriesByKey: {},
+        folderLoadingByKey: {},
+        selectedEntryKey: null,
         schema: { scale: 1, x: 80, y: 48, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0, hasUserMoved: false },
         dragDepth: 0
       };
@@ -2086,9 +2602,114 @@ function renderHtml(): string {
       };
 
       const selectedSource = () => allSources().find((source) => source.sourceId === state.selectedSourceId) || null;
+      const sourceTree = (source) => {
+        if (!source) return [];
+        if (source.sourceKind === "local") return source.remoteTree?.length ? source.remoteTree : source.localTree || [];
+        return source.tree || [];
+      };
+      const currentFolder = (source) => source ? (state.folderBySource[source.sourceId] || "") : "";
+      const setCurrentFolder = (source, folderPath) => {
+        if (!source) return;
+        const clean = String(folderPath || "").replace(/^\/+|\/+$/g, "");
+        state.folderBySource[source.sourceId] = clean;
+        state.selectedEntryKey = null;
+      };
+      const findTreeNode = (nodes, nodePath) => {
+        const clean = String(nodePath || "").replace(/^\/+|\/+$/g, "");
+        if (!clean) return null;
+        const stack = [...(nodes || [])];
+        while (stack.length) {
+          const node = stack.shift();
+          if (node.path === clean) return node;
+          if (node.children?.length) stack.push(...node.children);
+        }
+        return null;
+      };
+      const folderEntries = (source) => {
+        const tree = sourceTree(source);
+        const folder = currentFolder(source);
+        if (!folder) return tree;
+        const node = findTreeNode(tree, folder);
+        return node?.kind === "folder" ? node.children || [] : tree;
+      };
+      const folderListingKey = (source, folder) => source.sourceId + "::" + String(folder || "");
+      const folderEntriesUrl = (source, folder) =>
+        "/api/folder-entries?space=" + encodeURIComponent(source.space || "") +
+        "&prefix=" + encodeURIComponent(source.remotePathPrefix || "") +
+        "&folder=" + encodeURIComponent(folder || "");
+      async function loadFolderEntries(source, folder) {
+        if (!source) return;
+        const key = folderListingKey(source, folder);
+        if (state.folderEntriesByKey[key] || state.folderLoadingByKey[key]) return;
+        state.folderLoadingByKey[key] = true;
+        try {
+          const listing = await api(folderEntriesUrl(source, folder));
+          state.folderEntriesByKey[key] = listing.entries || [];
+        } catch {
+          state.folderEntriesByKey[key] = null;
+        } finally {
+          delete state.folderLoadingByKey[key];
+          const currentSource = selectedSource();
+          if (currentSource && folderListingKey(currentSource, currentFolder(currentSource)) === key) {
+            renderFolderBrowser();
+          }
+        }
+      }
+      const parentFolder = (folderPath) => {
+        const parts = String(folderPath || "").split("/").filter(Boolean);
+        parts.pop();
+        return parts.join("/");
+      };
+      const fileNameOf = (filePath) => String(filePath || "").split("/").filter(Boolean).pop() || "";
+      const extensionOf = (name) => {
+        const base = fileNameOf(name);
+        const index = base.lastIndexOf(".");
+        if (index <= 0 || index === base.length - 1) return "";
+        return base.slice(index + 1).toLowerCase();
+      };
+      const fileKind = (node) => {
+        if (node.kind === "folder") return "folder";
+        const extension = extensionOf(node.name);
+        if (["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"].includes(extension)) return "image";
+        if (extension === "pdf") return "pdf";
+        if (["md", "txt", "json", "csv", "ts", "tsx", "js", "jsx", "css", "html", "xml", "yml", "yaml"].includes(extension)) return "text";
+        if (["mp4", "mov", "webm"].includes(extension)) return "video";
+        if (["mp3", "wav", "m4a", "ogg", "aac"].includes(extension)) return "audio";
+        return "file";
+      };
+      const kindLabel = (node) => {
+        if (node.kind === "folder") return "folder";
+        const extension = extensionOf(node.name);
+        return extension || "file";
+      };
+      const localPathForNode = (source, nodePath) => {
+        const root = String(source?.localDir || "").replace(/\/+$/g, "");
+        const clean = String(nodePath || "").replace(/^\/+/g, "");
+        return clean ? root + "/" + clean : root;
+      };
+      const fileUrlForLocalPath = (value) => "file://" + encodeURI(String(value || ""));
+      const rawDownloadUrl = (space, filePath) =>
+        window.location.origin + "/api/raw-download?space=" + encodeURIComponent(space || "") + "&path=" + encodeURIComponent(filePath || "");
+      const clearFolderListings = () => {
+        state.folderEntriesByKey = {};
+        state.folderLoadingByKey = {};
+      };
+      const mimeTypeForExtension = (extension) => {
+        if (["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"].includes(extension)) return "image/" + (extension === "jpg" ? "jpeg" : extension);
+        if (extension === "pdf") return "application/pdf";
+        if (["md", "txt", "csv", "html", "css"].includes(extension)) return "text/plain";
+        if (["json"].includes(extension)) return "application/json";
+        if (["mp4", "mov", "webm"].includes(extension)) return "video/" + (extension === "mov" ? "quicktime" : extension);
+        if (["mp3", "wav", "m4a", "ogg", "aac"].includes(extension)) return "audio/" + (extension === "m4a" ? "mp4" : extension);
+        return "application/octet-stream";
+      };
 
       async function refresh() {
+        const previousIndexedAt = state.summary?.remoteIndexedAt || null;
         state.summary = await api("/api/summary");
+        if (previousIndexedAt && state.summary.remoteIndexedAt && previousIndexedAt !== state.summary.remoteIndexedAt) {
+          clearFolderListings();
+        }
         if (state.selectedSourceId && !allSources().some((source) => source.sourceId === state.selectedSourceId)) {
           state.selectedSourceId = null;
           state.sideMode = "system";
@@ -2194,8 +2815,134 @@ function renderHtml(): string {
           '</div>'
         );
         $("activity").innerHTML = remoteLog.concat(localLog).join("") || '<div class="empty-note">No activity yet.</div>';
+        renderFolderBrowser();
         renderInspector();
         renderSchema();
+      }
+
+      function renderCrumbs(source, folder) {
+        if (!source) return "";
+        const parts = String(folder || "").split("/").filter(Boolean);
+        let html = '<button class="crumb-button" type="button" data-folder-path="">root</button>';
+        let cursor = "";
+        for (const part of parts) {
+          cursor = cursor ? cursor + "/" + part : part;
+          html += '<span class="crumb-sep">/</span><button class="crumb-button" type="button" data-folder-path="' + esc(cursor) + '">' + esc(part) + '</button>';
+        }
+        return html;
+      }
+
+      function renderFileIcon(kind, extension) {
+        if (kind === "folder") return '<span class="file-icon folder" aria-hidden="true"></span>';
+        const label = extension ? extension.slice(0, 4) : "file";
+        return '<span class="file-icon file ' + esc(kind) + '" aria-hidden="true"><span class="file-ext">' + esc(label) + '</span></span>';
+      }
+
+      function renderEntryActions(node) {
+        if (node.kind === "folder") {
+          return '<span class="folder-item__actions" aria-hidden="true"></span>';
+        }
+        return '<span class="folder-item__actions">' +
+          '<button class="folder-item__action" type="button" data-file-action="open" title="Open">' + iconSvg("open") + '</button>' +
+          '<button class="folder-item__action" type="button" data-file-action="download" title="Download">' + iconSvg("download") + '</button>' +
+        '</span>';
+      }
+
+      function renderFolderBrowser() {
+        const source = selectedSource();
+        document.querySelectorAll("[data-view-mode]").forEach((button) => button.classList.toggle("active", button.dataset.viewMode === state.viewMode));
+        $("folderItems").className = "folder-items " + state.viewMode;
+        if (!source) {
+          $("folderTitle").textContent = "Select a source";
+          $("folderMeta").textContent = "Double-click folders to open them.";
+          $("folderCrumbs").innerHTML = "";
+          $("folderItems").innerHTML = '<div class="folder-empty">Choose a shared source on the left to browse files like a folder.</div>';
+          $("folderUp").disabled = true;
+          $("folderNew").disabled = true;
+          return;
+        }
+
+        const folder = currentFolder(source);
+        const listingKey = folderListingKey(source, folder);
+        const lazyEntries = state.folderEntriesByKey[listingKey];
+        if (lazyEntries === undefined && !state.folderLoadingByKey[listingKey]) {
+          void loadFolderEntries(source, folder);
+        }
+        const entries = (Array.isArray(lazyEntries) ? lazyEntries : folderEntries(source)).slice().sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
+        const folderLabel = folder ? fileNameOf(folder) : source.label;
+        const loading = Boolean(state.folderLoadingByKey[listingKey]);
+        $("folderTitle").textContent = folderLabel;
+        $("folderMeta").textContent =
+          (source.sourceKind === "local" ? "local + vault" : "remote") +
+          " / " +
+          (folder || source.remotePathPrefix || source.space) +
+          " / " +
+          entries.length +
+          " items" +
+          (loading ? " / loading full folder" : "");
+        $("folderCrumbs").innerHTML = renderCrumbs(source, folder);
+        $("folderUp").disabled = !folder;
+        $("folderNew").disabled = source.sourceKind !== "local";
+        $("folderItems").innerHTML = entries.length
+          ? entries.map((node) => {
+              const kind = fileKind(node);
+              const extension = extensionOf(node.name);
+              const remotePath = source ? remotePathForNode(source, node.path) : node.path;
+              const hasLocalFile = source.sourceKind === "local" && findTreeNode(source.localTree || [], node.path)?.kind === "file";
+              const localPath = hasLocalFile ? localPathForNode(source, node.path) : "";
+              const downloadUrl = node.kind === "file" ? rawDownloadUrl(source.space || "", remotePath) : "";
+              const mime = node.kind === "file" ? mimeTypeForExtension(extension) : "";
+              const key = source.sourceId + "::" + node.path;
+              const selected = state.selectedEntryKey === key;
+              const metric = node.kind === "folder" ? node.count + " items" : fmtSize(node.size);
+              const openPath = node.kind === "folder" ? node.path : "";
+              return '<div class="folder-item ' + esc(state.viewMode) + (selected ? " selected" : "") + '" role="button" tabindex="0" draggable="true" data-entry-key="' + esc(key) + '" data-entry-kind="' + esc(node.kind) + '" data-entry-path="' + esc(node.path) + '" data-folder-open="' + esc(openPath) + '" data-file-name="' + esc(node.name) + '" data-file-mime="' + esc(mime) + '" data-file-download-space="' + esc(source.space || "") + '" data-file-download-path="' + esc(remotePath) + '" data-raw-download-url="' + esc(downloadUrl) + '" data-local-open="' + esc(localPath) + '" title="' + esc(node.name) + '">' +
+                renderFileIcon(kind, extension) +
+                '<span class="folder-item__name">' + esc(node.name) + '</span>' +
+                '<span class="folder-item__kind">' + esc(kindLabel(node)) + '</span>' +
+                '<span class="folder-item__meta">' + esc(metric) + '</span>' +
+                renderEntryActions(node) +
+              '</div>';
+            }).join("")
+          : '<div class="folder-empty">' + (loading ? "Loading folder..." : "This folder is empty.") + '</div>';
+      }
+
+      async function activateFolderEntry(entryNode, action = "open") {
+        const source = selectedSource();
+        if (!source || !entryNode?.dataset?.entryKind) return;
+        if (entryNode.dataset.entryKind === "folder") {
+          setCurrentFolder(source, entryNode.dataset.entryPath || "");
+          renderFolderBrowser();
+          renderInspector();
+          return;
+        }
+
+        const localPath = entryNode.dataset.localOpen || "";
+        if (localPath && action === "open") {
+          await api("/api/open-folder", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path: localPath })
+          });
+          toast("Opened " + shortPath(localPath));
+          return;
+        }
+
+        const remotePath = entryNode.dataset.fileDownloadPath || "";
+        if (!remotePath) return;
+        toast(action === "open" ? "Opening file" : "Downloading file");
+        const result = await api("/api/download-remote", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            space: entryNode.dataset.fileDownloadSpace,
+            path: remotePath,
+            open: action === "open",
+            reveal: action !== "open"
+          })
+        });
+        await refresh();
+        toast((action === "open" ? "Opened " : "Downloaded ") + shortPath(result.download?.targetPath || remotePath));
       }
 
       function remotePathForNode(source, nodePath) {
@@ -2211,7 +2958,7 @@ function renderHtml(): string {
           if (node.kind === "folder") {
             const open = depth < 1 ? " open" : "";
             return '<details' + open + '>' +
-              '<summary><span class="tree-name">' + esc(node.name) + '</span><span class="tree-metric">' + metric + '</span></summary>' +
+              '<summary data-tree-folder-path="' + esc(node.path) + '"><span class="tree-name">' + esc(node.name) + '</span><span class="tree-metric">' + metric + '</span></summary>' +
               renderTreeNodes(node.children || [], source, depth + 1) +
             '</details>';
           }
@@ -2236,10 +2983,12 @@ function renderHtml(): string {
         const isLocal = source.sourceKind === "local";
         const pathText = isLocal ? source.localDir : source.origin + " / " + source.remotePathPrefix;
         const tree = isLocal ? (source.remoteTree?.length ? source.remoteTree : source.localTree) : source.tree;
+        const visibleCount = isLocal && !source.remoteFileCount ? source.localFileCount : source.remoteFileCount;
+        const visibleSize = isLocal && !source.remoteSize ? source.localSize : source.remoteSize;
         $("selectedSource").innerHTML =
           '<h2 class="selected-source-title">' + esc(source.label) + '</h2>' +
           '<div class="selected-source-meta">' + esc(pathText) + '</div>' +
-          '<div class="selected-source-meta">' + esc(fileLabel(source.remoteFileCount)) + ' / ' + esc(fmtSize(source.remoteSize)) + ' / ' + esc(accessLabel(source.access)) + '</div>';
+          '<div class="selected-source-meta">' + esc(fileLabel(visibleCount)) + ' / ' + esc(fmtSize(visibleSize)) + ' / ' + esc(accessLabel(source.access)) + '</div>';
         $("accessControls").innerHTML = isLocal ? [
           ["readonly", "read"],
           ["writeonly", "write"],
@@ -2324,6 +3073,7 @@ function renderHtml(): string {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ path })
         });
+        clearFolderListings();
         toast("Shared folder added");
         await refresh();
       }
@@ -2374,6 +3124,7 @@ function renderHtml(): string {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ paths: localPaths })
           });
+          clearFolderListings();
           await refresh();
           toast("Drop complete");
           return;
@@ -2393,6 +3144,7 @@ function renderHtml(): string {
         for (const item of files) {
           await uploadFile(item.file, item.path);
         }
+        clearFolderListings();
         await refresh();
         toast("Drop upload complete");
       }
@@ -2400,6 +3152,7 @@ function renderHtml(): string {
       $("syncAll").addEventListener("click", async () => {
         toast("Sync running");
         await api("/api/sync", { method: "POST" });
+        clearFolderListings();
         await refresh();
         toast("Sync complete");
       });
@@ -2425,8 +3178,64 @@ function renderHtml(): string {
           renderInspector();
         });
       });
+      document.querySelectorAll("[data-view-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.viewMode = button.dataset.viewMode || "grid";
+          renderFolderBrowser();
+        });
+      });
+      $("folderUp").addEventListener("click", () => {
+        const source = selectedSource();
+        if (!source) return;
+        setCurrentFolder(source, parentFolder(currentFolder(source)));
+        renderFolderBrowser();
+        renderInspector();
+      });
+      $("folderNew").addEventListener("click", async () => {
+        const source = selectedSource();
+        if (!source || source.sourceKind !== "local") return;
+        const name = window.prompt("Folder name");
+        if (!name?.trim()) return;
+        const folder = currentFolder(source);
+        const path = folder ? folder + "/" + name.trim() : name.trim();
+        toast("Creating folder");
+        await api("/api/shares/" + encodeURIComponent(source.id) + "/folders", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path })
+        });
+        clearFolderListings();
+        await refresh();
+        setCurrentFolder(selectedSource(), folder);
+        toast("Folder created");
+      });
       document.addEventListener("click", async (event) => {
         const target = event.target instanceof HTMLElement ? event.target : null;
+        const crumbNode = target?.closest?.("[data-folder-path]");
+        if (crumbNode?.dataset) {
+          const source = selectedSource();
+          if (source) {
+            setCurrentFolder(source, crumbNode.dataset.folderPath || "");
+            renderFolderBrowser();
+            renderInspector();
+          }
+          return;
+        }
+        const fileActionNode = target?.closest?.("[data-file-action]");
+        if (fileActionNode?.dataset?.fileAction) {
+          event.preventDefault();
+          event.stopPropagation();
+          const entryNode = fileActionNode.closest(".folder-item");
+          if (entryNode) await activateFolderEntry(entryNode, fileActionNode.dataset.fileAction);
+          return;
+        }
+        const entryNode = target?.closest?.(".folder-item");
+        if (entryNode?.dataset?.entryKey) {
+          state.selectedEntryKey = entryNode.dataset.entryKey;
+          document.querySelectorAll(".folder-item.selected").forEach((item) => item.classList.remove("selected"));
+          entryNode.classList.add("selected");
+          return;
+        }
         const downloadNode = target?.closest?.("[data-download-path]");
         if (downloadNode?.dataset?.downloadPath) {
           event.preventDefault();
@@ -2468,6 +3277,7 @@ function renderHtml(): string {
         }
         if (removeId) {
           await api("/api/shares/" + encodeURIComponent(removeId), { method: "DELETE" });
+          clearFolderListings();
           if (state.selectedSourceId === "local:" + removeId) {
             state.selectedSourceId = null;
             state.sideMode = "system";
@@ -2483,6 +3293,7 @@ function renderHtml(): string {
               headers: { "content-type": "application/json" },
               body: JSON.stringify({ name })
             });
+            clearFolderListings();
             await refresh();
             toast("Folder created");
           }
@@ -2490,6 +3301,7 @@ function renderHtml(): string {
         if (syncId) {
           toast("Folder sync running");
           await api("/api/shares/" + encodeURIComponent(syncId) + "/sync", { method: "POST" });
+          clearFolderListings();
           await refresh();
           toast("Folder sync complete");
         }
@@ -2499,6 +3311,60 @@ function renderHtml(): string {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ path: openFolder })
           });
+        }
+      });
+      document.addEventListener("dblclick", async (event) => {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        const treeFolder = target?.closest?.("[data-tree-folder-path]");
+        if (treeFolder?.dataset) {
+          const source = selectedSource();
+          if (source) {
+            setCurrentFolder(source, treeFolder.dataset.treeFolderPath || "");
+            renderFolderBrowser();
+            renderInspector();
+          }
+          return;
+        }
+        const entryNode = target?.closest?.(".folder-item");
+        if (!entryNode?.dataset?.entryKind) return;
+        event.preventDefault();
+        event.stopPropagation();
+        await activateFolderEntry(entryNode, "open");
+      });
+      document.addEventListener("keydown", async (event) => {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        const entryNode = target?.closest?.(".folder-item");
+        if (!entryNode?.dataset?.entryKind) return;
+        if (event.key === "Enter") {
+          event.preventDefault();
+          await activateFolderEntry(entryNode, "open");
+        }
+        if (event.key === "Backspace") {
+          const source = selectedSource();
+          if (!source) return;
+          event.preventDefault();
+          setCurrentFolder(source, parentFolder(currentFolder(source)));
+          renderFolderBrowser();
+          renderInspector();
+        }
+      });
+      document.addEventListener("dragstart", (event) => {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        const entryNode = target?.closest?.(".folder-item");
+        if (!entryNode?.dataset?.entryPath) return;
+        const source = selectedSource();
+        const label = source ? (source.label + "/" + entryNode.dataset.entryPath) : entryNode.dataset.entryPath;
+        event.dataTransfer?.setData("text/plain", label);
+        if (entryNode.dataset.entryKind === "file") {
+          const localPath = entryNode.dataset.localOpen || "";
+          if (localPath) {
+            event.dataTransfer?.setData("text/uri-list", fileUrlForLocalPath(localPath));
+          } else if (entryNode.dataset.rawDownloadUrl) {
+            const mime = entryNode.dataset.fileMime || "application/octet-stream";
+            const name = entryNode.dataset.fileName || "agent-vault-file";
+            event.dataTransfer?.setData("DownloadURL", mime + ":" + name + ":" + entryNode.dataset.rawDownloadUrl);
+            event.dataTransfer?.setData("text/uri-list", entryNode.dataset.rawDownloadUrl);
+          }
         }
       });
 
