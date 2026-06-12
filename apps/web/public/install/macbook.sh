@@ -54,7 +54,15 @@ ln -sfn "../../../core" "$INSTALL_DIR/packages/sync/node_modules/@agent-vault/co
 cat >"$INSTALL_DIR/bin/agent-vault-sync" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  if [[ "$SOURCE" != /* ]]; then
+    SOURCE="$SOURCE_DIR/$SOURCE"
+  fi
+done
+ROOT_DIR="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
 exec node "$ROOT_DIR/apps/mac-sync/dist/cli.js" "$@"
 SCRIPT
 chmod +x "$INSTALL_DIR/bin/agent-vault-sync"
