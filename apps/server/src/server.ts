@@ -103,6 +103,13 @@ function queryPath(url: URL): string {
   return normalizeVaultPath(value);
 }
 
+function requestDevice(req: IncomingMessage): string {
+  const header = req.headers["x-agent-vault-device"];
+  const value = Array.isArray(header) ? header[0] : header;
+  const device = value?.trim() || "local";
+  return device.slice(0, 80);
+}
+
 async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = parseUrl(req);
   const segments = routeSegments(url);
@@ -133,18 +140,30 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     return;
   }
 
+  if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "audit" && method === "GET") {
+    const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    app.db.ensureSpace(space);
+    sendJson(res, 200, { events: app.db.listAudit(space) });
+    return;
+  }
+
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "file" && method === "PUT") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
     const filePath = queryPath(url);
     const body = await readBody(req);
-    const stored = await app.storage.writeFile(space, filePath, body);
-    const file = app.db.upsertFile({
-      id: randomUUID(),
+    const next = app.db.getNextVersion(space, filePath);
+    const stored = await app.storage.writeVersionedFile(space, next.fileId, next.version, filePath, body);
+    const file = app.db.upsertFileVersion({
+      id: next.fileId,
       space: stored.space,
       path: stored.path,
       size: stored.size,
       sha256: stored.sha256,
       storagePath: stored.storagePath,
+      version: next.version,
+      versionStoragePath: stored.versionStoragePath,
+      device: requestDevice(req),
+      operation: next.operation,
     });
     sendJson(res, 201, { file });
     return;
@@ -154,7 +173,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
     const filePath = queryPath(url);
     const file = app.db.getFile(space, filePath);
-    if (!file) {
+    if (!file || file.deletedAt) {
       throw new HttpError(404, "file_not_found", "File was not found.");
     }
 
@@ -171,6 +190,44 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
       "x-content-sha256": file.sha256,
     });
     res.end(body);
+    return;
+  }
+
+  if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "file" && method === "DELETE") {
+    const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    const filePath = queryPath(url);
+    const file = app.db.getFile(space, filePath);
+    if (!file || file.deletedAt) {
+      throw new HttpError(404, "file_not_found", "File was not found.");
+    }
+
+    const trashPath = await app.storage.moveCurrentToTrash(space, file.path, file.id, file.currentVersion);
+    const deleted = app.db.markDeleted(space, file.path, requestDevice(req));
+    sendJson(res, 200, { file: deleted, trashPath });
+    return;
+  }
+
+  if (segments.length === 4 && segments[0] === "spaces" && segments[2] === "file" && segments[3] === "restore" && method === "POST") {
+    const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    const filePath = queryPath(url);
+    const existing = app.db.getFile(space, filePath);
+    if (!existing) {
+      throw new HttpError(404, "file_not_found", "File was not found.");
+    }
+
+    const version = Number.parseInt(url.searchParams.get("version") ?? String(existing.currentVersion), 10);
+    if (!Number.isInteger(version) || version < 1) {
+      throw new HttpError(400, "invalid_version", "Version must be a positive integer.");
+    }
+
+    const versionRecord = app.db.getVersion(existing.id, version);
+    if (!versionRecord) {
+      throw new HttpError(404, "version_not_found", "Version was not found.");
+    }
+
+    await app.storage.restoreVersionToCurrent(versionRecord.storagePath, space, filePath);
+    const restored = app.db.restoreFile(space, filePath, version, requestDevice(req));
+    sendJson(res, 200, { file: restored });
     return;
   }
 

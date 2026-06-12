@@ -17,6 +17,7 @@ export interface StoredFileWrite {
   path: string;
   absolutePath: string;
   storagePath: string;
+  versionStoragePath: string;
   size: number;
   sha256: string;
 }
@@ -63,24 +64,32 @@ export class FileStorage {
     this.root = path.resolve(options.root);
   }
 
-  async writeFile(spaceInput: string, pathInput: string, body: Buffer): Promise<StoredFileWrite> {
+  async writeVersionedFile(
+    spaceInput: string,
+    fileId: string,
+    version: number,
+    pathInput: string,
+    body: Buffer,
+  ): Promise<StoredFileWrite> {
     const space = normalizeSpaceName(spaceInput);
     const vaultPath = normalizeVaultPath(pathInput);
-    const absolutePath = this.resolveSpacePath(space, vaultPath);
-    const tempPath = `${absolutePath}.agent-vault-${process.pid}-${randomUUID()}.tmp`;
+    const versionStoragePath = path.posix.join(
+      ".versions",
+      space,
+      fileId,
+      `v${version}`,
+      path.posix.basename(vaultPath),
+    );
 
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(tempPath, body, { flag: "wx" });
-    await rename(tempPath, absolutePath).catch(async (error: unknown) => {
-      await unlink(tempPath).catch(() => undefined);
-      throw error;
-    });
+    await this.writeStoragePath(versionStoragePath, body);
+    const currentWrite = await this.writeCurrentFile(space, vaultPath, body);
 
     return {
       space,
       path: vaultPath,
-      absolutePath,
-      storagePath: path.posix.join("spaces", space, vaultPath),
+      absolutePath: currentWrite.absolutePath,
+      storagePath: currentWrite.storagePath,
+      versionStoragePath,
       size: body.byteLength,
       sha256: sha256Buffer(body),
     };
@@ -91,10 +100,73 @@ export class FileStorage {
     return readFile(absolutePath);
   }
 
+  async readStoragePath(storagePath: string): Promise<Buffer> {
+    return readFile(this.resolveStoragePath(storagePath));
+  }
+
+  async moveCurrentToTrash(spaceInput: string, pathInput: string, fileId: string, version: number): Promise<string> {
+    const space = normalizeSpaceName(spaceInput);
+    const vaultPath = normalizeVaultPath(pathInput);
+    const source = this.resolveSpacePath(space, vaultPath);
+    const trashPath = path.posix.join(
+      ".trash",
+      space,
+      fileId,
+      `${Date.now()}-v${version}-${path.posix.basename(vaultPath)}`,
+    );
+    const destination = this.resolveStoragePath(trashPath);
+
+    await mkdir(path.dirname(destination), { recursive: true });
+    await rename(source, destination);
+    return trashPath;
+  }
+
+  async restoreVersionToCurrent(versionStoragePath: string, spaceInput: string, pathInput: string): Promise<void> {
+    const body = await this.readStoragePath(versionStoragePath);
+    const space = normalizeSpaceName(spaceInput);
+    const vaultPath = normalizeVaultPath(pathInput);
+    await this.writeCurrentFile(space, vaultPath, body);
+  }
+
   resolveSpacePath(spaceInput: string, pathInput: string): string {
     const space = normalizeSpaceName(spaceInput);
     const vaultPath = normalizeVaultPath(pathInput);
     const absolutePath = path.resolve(this.root, "spaces", space, ...vaultPath.split("/"));
+    const rootWithSeparator = `${this.root}${path.sep}`;
+
+    if (absolutePath !== this.root && !absolutePath.startsWith(rootWithSeparator)) {
+      throw new VaultStorageError("outside_root", "Resolved path escapes the storage root.");
+    }
+
+    return absolutePath;
+  }
+
+  private async writeCurrentFile(
+    space: string,
+    vaultPath: string,
+    body: Buffer,
+  ): Promise<{ absolutePath: string; storagePath: string }> {
+    const storagePath = path.posix.join("spaces", space, vaultPath);
+    const absolutePath = this.resolveStoragePath(storagePath);
+    await this.writeStoragePath(storagePath, body);
+    return { absolutePath, storagePath };
+  }
+
+  private async writeStoragePath(storagePath: string, body: Buffer): Promise<void> {
+    const absolutePath = this.resolveStoragePath(storagePath);
+    const tempPath = `${absolutePath}.agent-vault-${process.pid}-${randomUUID()}.tmp`;
+
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(tempPath, body, { flag: "wx" });
+    await rename(tempPath, absolutePath).catch(async (error: unknown) => {
+      await unlink(tempPath).catch(() => undefined);
+      throw error;
+    });
+  }
+
+  private resolveStoragePath(storagePath: string): string {
+    const normalized = normalizeVaultPath(storagePath);
+    const absolutePath = path.resolve(this.root, ...normalized.split("/"));
     const rootWithSeparator = `${this.root}${path.sep}`;
 
     if (absolutePath !== this.root && !absolutePath.startsWith(rootWithSeparator)) {

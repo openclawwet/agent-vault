@@ -12,8 +12,33 @@ export interface VaultFileRecord {
   size: number;
   sha256: string;
   storagePath: string;
+  currentVersion: number;
+  deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface VaultFileVersionRecord {
+  id: string;
+  fileId: string;
+  version: number;
+  size: number;
+  sha256: string;
+  storagePath: string;
+  createdAt: string;
+}
+
+export type AuditOperation = "upload" | "update" | "delete" | "restore" | "auth_failed";
+
+export interface AuditEventRecord {
+  id: string;
+  device: string;
+  space: string;
+  operation: AuditOperation;
+  path: string;
+  version: number | null;
+  hash: string | null;
+  timestamp: string;
 }
 
 export interface UploadFileResult {
