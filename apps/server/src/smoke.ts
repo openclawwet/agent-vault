@@ -28,6 +28,7 @@ const started = await startAgentVaultServer({
 
 try {
   const auth = { authorization: `Bearer ${token}` };
+  const space = "Inbox";
   const payload = Buffer.from("hello from agent vault\n");
   const updatedPayload = Buffer.from("hello from agent vault v2\n");
   const filePath = "notes/hello.txt";
@@ -35,12 +36,33 @@ try {
   const health = await fetch(`${started.url}/health`);
   assert(health.ok, "health endpoint failed");
 
-  const unauthenticated = await fetch(`${started.url}/spaces/default/files`);
+  const unauthenticated = await fetch(`${started.url}/spaces/${space}/files`);
   assert(unauthenticated.status === 401, "list endpoint should require auth");
 
-  const upload = await fetch(`${started.url}/spaces/default/file?path=${encodeURIComponent(filePath)}`, {
+  const spaces = await fetch(`${started.url}/spaces`, { headers: auth });
+  assert(spaces.ok, "spaces endpoint failed");
+  const spacesJson = await expectJson(spaces);
+  const spaceList = spacesJson.spaces as Array<{ name: string }> | undefined;
+  assert(spaceList?.some((item) => item.name === "MacBook Shared"), "default spaces missing");
+
+  const deviceCreate = await fetch(`${started.url}/devices`, {
+    method: "POST",
+    headers: { ...auth, "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "macbook",
+      scopes: [{ space, permissions: ["read", "write"] }],
+    }),
+  });
+  assert(deviceCreate.status === 201, "device create failed");
+  const deviceJson = await expectJson(deviceCreate);
+  const macbookToken = deviceJson.token as string | undefined;
+  const macbookDevice = deviceJson.device as { id?: string } | undefined;
+  assert(macbookToken && macbookDevice?.id, "device token or id missing");
+  const macbookAuth = { authorization: `Bearer ${macbookToken}` };
+
+  const upload = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
     method: "PUT",
-    headers: auth,
+    headers: macbookAuth,
     body: payload,
   });
   assert(upload.status === 201, `upload failed with ${upload.status}`);
@@ -50,9 +72,30 @@ try {
   assert(uploadedFile?.size === payload.byteLength, "uploaded metadata size mismatch");
   assert(typeof uploadedFile.sha256 === "string", "uploaded metadata hash missing");
 
-  const update = await fetch(`${started.url}/spaces/default/file?path=${encodeURIComponent(filePath)}`, {
-    method: "PUT",
+  const deniedSpace = await fetch(`${started.url}/spaces/Archive/files`, { headers: macbookAuth });
+  assert(deniedSpace.status === 403, "device should not read outside scoped space");
+
+  const deniedDelete = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
+    method: "DELETE",
+    headers: macbookAuth,
+  });
+  assert(deniedDelete.status === 403, "device without delete scope should not delete");
+
+  const rotate = await fetch(`${started.url}/devices/${macbookDevice.id}/rotate`, {
+    method: "POST",
     headers: auth,
+  });
+  assert(rotate.ok, "device rotate failed");
+  const rotateJson = await expectJson(rotate);
+  const rotatedToken = rotateJson.token as string | undefined;
+  assert(rotatedToken && rotatedToken !== macbookToken, "rotated token missing");
+  const oldTokenCheck = await fetch(`${started.url}/spaces/${space}/files`, { headers: macbookAuth });
+  assert(oldTokenCheck.status === 401, "old rotated token should be invalid");
+  const rotatedAuth = { authorization: `Bearer ${rotatedToken}` };
+
+  const update = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
+    method: "PUT",
+    headers: rotatedAuth,
     body: updatedPayload,
   });
   assert(update.status === 201, `update failed with ${update.status}`);
@@ -61,58 +104,64 @@ try {
   assert(updatedFile?.currentVersion === 2, "update should create version 2");
   assert(updatedFile?.size === updatedPayload.byteLength, "updated metadata size mismatch");
 
-  const list = await fetch(`${started.url}/spaces/default/files`, { headers: auth });
+  const list = await fetch(`${started.url}/spaces/${space}/files`, { headers: rotatedAuth });
   assert(list.ok, "list endpoint failed");
   const listJson = await expectJson(list);
   const files = listJson.files as Array<{ path: string }> | undefined;
   assert(files?.some((file) => file.path === filePath), "uploaded file missing from list");
 
-  const download = await fetch(`${started.url}/spaces/default/file?path=${encodeURIComponent(filePath)}`, {
-    headers: auth,
+  const download = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
+    headers: rotatedAuth,
   });
   assert(download.ok, "download endpoint failed");
   const downloaded = Buffer.from(await download.arrayBuffer());
   assert(downloaded.equals(updatedPayload), "downloaded bytes differ from latest uploaded bytes");
 
-  const auditAfterUpdate = await fetch(`${started.url}/spaces/default/audit`, { headers: auth });
+  const auditAfterUpdate = await fetch(`${started.url}/spaces/${space}/audit`, { headers: auth });
   assert(auditAfterUpdate.ok, "audit endpoint failed");
   const auditJson = await expectJson(auditAfterUpdate);
   const auditEvents = auditJson.events as Array<{ operation: string; path: string; version: number }> | undefined;
   assert(auditEvents?.some((event) => event.operation === "upload" && event.path === filePath && event.version === 1), "upload audit missing");
   assert(auditEvents?.some((event) => event.operation === "update" && event.path === filePath && event.version === 2), "update audit missing");
 
-  const deleted = await fetch(`${started.url}/spaces/default/file?path=${encodeURIComponent(filePath)}`, {
+  const deleted = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
     method: "DELETE",
     headers: auth,
   });
   assert(deleted.ok, "delete endpoint failed");
 
-  const deletedDownload = await fetch(`${started.url}/spaces/default/file?path=${encodeURIComponent(filePath)}`, {
-    headers: auth,
+  const deletedDownload = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
+    headers: rotatedAuth,
   });
   assert(deletedDownload.status === 404, "deleted file should not download");
 
-  const restore = await fetch(`${started.url}/spaces/default/file/restore?path=${encodeURIComponent(filePath)}&version=1`, {
+  const restore = await fetch(`${started.url}/spaces/${space}/file/restore?path=${encodeURIComponent(filePath)}&version=1`, {
     method: "POST",
     headers: auth,
   });
   assert(restore.ok, "restore endpoint failed");
 
-  const restoredDownload = await fetch(`${started.url}/spaces/default/file?path=${encodeURIComponent(filePath)}`, {
-    headers: auth,
+  const restoredDownload = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
+    headers: rotatedAuth,
   });
   assert(restoredDownload.ok, "restored file should download");
   const restoredBytes = Buffer.from(await restoredDownload.arrayBuffer());
   assert(restoredBytes.equals(payload), "restored version bytes differ from version 1");
 
-  const traversal = await fetch(`${started.url}/spaces/default/file?path=${encodeURIComponent("../escape.txt")}`, {
+  const traversal = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent("../escape.txt")}`, {
     method: "PUT",
     headers: auth,
     body: Buffer.from("nope"),
   });
   assert(traversal.status === 400, "path traversal upload should be rejected");
 
-  const storedPath = path.join(tempRoot, "storage", "spaces", "default", "notes", "hello.txt");
+  const authAudit = await fetch(`${started.url}/spaces/system/audit`, { headers: auth });
+  assert(authAudit.ok, "system audit endpoint failed");
+  const authAuditJson = await expectJson(authAudit);
+  const authEvents = authAuditJson.events as Array<{ operation: string }> | undefined;
+  assert(authEvents?.some((event) => event.operation === "auth_failed"), "auth failure audit missing");
+
+  const storedPath = path.join(tempRoot, "storage", "spaces", space, "notes", "hello.txt");
   const storedBytes = await readFile(storedPath);
   assert(storedBytes.equals(payload), "stored file bytes differ from uploaded bytes");
   await stat(path.join(tempRoot, "agent-vault.sqlite"));

@@ -1,8 +1,25 @@
-export const DEFAULT_SPACE = "default";
+export const DEFAULT_SPACE = "Inbox";
+export const DEFAULT_SPACES = ["Inbox", "MacBook Shared", "Agent Drafts", "Approvals", "Projects", "Archive"] as const;
+
+export type VaultPermission = "read" | "write" | "delete" | "admin";
 
 export interface SpaceInfo {
   name: string;
   createdAt: string;
+}
+
+export interface DeviceScopeRecord {
+  space: string;
+  permissions: VaultPermission[];
+}
+
+export interface DeviceRecord {
+  id: string;
+  name: string;
+  scopes: DeviceScopeRecord[];
+  createdAt: string;
+  rotatedAt: string | null;
+  disabledAt: string | null;
 }
 
 export interface VaultFileRecord {

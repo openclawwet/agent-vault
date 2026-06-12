@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
-import { DEFAULT_SPACE, type HealthResult } from "@agent-vault/core";
+import { DEFAULT_SPACE, type DeviceScopeRecord, type HealthResult, type VaultPermission } from "@agent-vault/core";
 import { FileStorage, normalizeSpaceName, normalizeVaultPath, sha256Buffer, VaultStorageError } from "@agent-vault/storage";
-import { isAuthorized } from "./auth.js";
+import { extractBearerToken, tokenHash } from "./auth.js";
 import { type AgentVaultConfigOverrides, resolveConfig, type AgentVaultConfig } from "./config.js";
 import { VaultDb } from "./db/vaultDb.js";
 
@@ -24,6 +24,12 @@ export interface AgentVaultApp {
   readonly storage: FileStorage;
   handler(req: IncomingMessage, res: ServerResponse): Promise<void>;
   close(): void;
+}
+
+interface AuthContext {
+  deviceId: string;
+  deviceName: string;
+  scopes: DeviceScopeRecord[];
 }
 
 export interface StartedAgentVaultServer {
@@ -89,10 +95,39 @@ function routeSegments(url: URL): string[] {
     .map((segment) => decodeURIComponent(segment));
 }
 
-function requireAuth(req: IncomingMessage, config: AgentVaultConfig): void {
-  if (!isAuthorized(req, config.token)) {
+function recordAuthFailure(app: AgentVaultApp): void {
+  try {
+    app.db.recordAuditEvent({
+      device: "unknown",
+      space: "system",
+      operation: "auth_failed",
+      path: "authorization",
+      version: null,
+      hash: null,
+    });
+  } catch {
+    // Auth failure auditing must not leak details or mask the 401 response.
+  }
+}
+
+function requireAuth(req: IncomingMessage, app: AgentVaultApp): AuthContext {
+  const token = extractBearerToken(req);
+  if (!token) {
+    recordAuthFailure(app);
     throw new HttpError(401, "unauthorized", "Missing or invalid Agent Vault token.");
   }
+
+  const device = app.db.getDeviceByTokenHash(tokenHash(token));
+  if (!device) {
+    recordAuthFailure(app);
+    throw new HttpError(401, "unauthorized", "Missing or invalid Agent Vault token.");
+  }
+
+  return {
+    deviceId: device.id,
+    deviceName: device.name,
+    scopes: device.scopes,
+  };
 }
 
 function queryPath(url: URL): string {
@@ -103,11 +138,73 @@ function queryPath(url: URL): string {
   return normalizeVaultPath(value);
 }
 
-function requestDevice(req: IncomingMessage): string {
-  const header = req.headers["x-agent-vault-device"];
-  const value = Array.isArray(header) ? header[0] : header;
-  const device = value?.trim() || "local";
-  return device.slice(0, 80);
+function hasPermission(auth: AuthContext, space: string, permission: VaultPermission): boolean {
+  return auth.scopes.some((scope) => {
+    if (scope.space !== space) {
+      return false;
+    }
+    return scope.permissions.includes("admin") || scope.permissions.includes(permission);
+  });
+}
+
+function requirePermission(auth: AuthContext, space: string, permission: VaultPermission): void {
+  if (!hasPermission(auth, space, permission)) {
+    throw new HttpError(403, "forbidden", "Device is not allowed to access this space.");
+  }
+}
+
+function requireAnyAdmin(auth: AuthContext): void {
+  if (!auth.scopes.some((scope) => scope.permissions.includes("admin"))) {
+    throw new HttpError(403, "forbidden", "Admin permission is required.");
+  }
+}
+
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const body = await readBody(req, 1024 * 1024);
+  if (!body.byteLength) {
+    return {};
+  }
+  const parsed = JSON.parse(body.toString("utf8")) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new HttpError(400, "invalid_json", "JSON body must be an object.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function parseScopeInputs(value: unknown): DeviceScopeRecord[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new HttpError(400, "invalid_scopes", "At least one scope is required.");
+  }
+
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new HttpError(400, "invalid_scope", "Scope must be an object.");
+    }
+    const scope = item as Record<string, unknown>;
+    const space = normalizeSpaceName(String(scope.space ?? ""));
+    const permissions = scope.permissions;
+    if (!Array.isArray(permissions) || permissions.length === 0) {
+      throw new HttpError(400, "invalid_permissions", "Scope permissions are required.");
+    }
+
+    const allowed = new Set<VaultPermission>(["read", "write", "delete", "admin"]);
+    const parsedPermissions = permissions.map((permission) => {
+      const value = String(permission);
+      if (!allowed.has(value as VaultPermission)) {
+        throw new HttpError(400, "invalid_permission", "Unknown permission.");
+      }
+      return value as VaultPermission;
+    });
+
+    return {
+      space,
+      permissions: [...new Set(parsedPermissions)],
+    };
+  });
+}
+
+function generateDeviceToken(): string {
+  return randomBytes(32).toString("hex");
 }
 
 async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -126,15 +223,48 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     return;
   }
 
-  requireAuth(req, app.config);
+  const auth = requireAuth(req, app);
 
   if (method === "GET" && segments.length === 1 && segments[0] === "spaces") {
     sendJson(res, 200, { spaces: app.db.listSpaces() });
     return;
   }
 
+  if (method === "GET" && segments.length === 1 && segments[0] === "devices") {
+    requireAnyAdmin(auth);
+    sendJson(res, 200, { devices: app.db.listDevices() });
+    return;
+  }
+
+  if (method === "POST" && segments.length === 1 && segments[0] === "devices") {
+    requireAnyAdmin(auth);
+    const body = await readJson(req);
+    const name = String(body.name ?? "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}$/.test(name)) {
+      throw new HttpError(400, "invalid_device_name", "Device name is invalid.");
+    }
+    const scopes = parseScopeInputs(body.scopes);
+    const token = generateDeviceToken();
+    const device = app.db.createDevice({
+      name,
+      tokenHash: tokenHash(token),
+      scopes,
+    });
+    sendJson(res, 201, { device, token });
+    return;
+  }
+
+  if (method === "POST" && segments.length === 3 && segments[0] === "devices" && segments[2] === "rotate") {
+    requireAnyAdmin(auth);
+    const token = generateDeviceToken();
+    const device = app.db.rotateDeviceToken(segments[1] ?? "", tokenHash(token));
+    sendJson(res, 200, { device, token });
+    return;
+  }
+
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "files" && method === "GET") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "read");
     app.db.ensureSpace(space);
     sendJson(res, 200, { files: app.db.listFiles(space) });
     return;
@@ -142,6 +272,11 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
 
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "audit" && method === "GET") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    if (space === "system") {
+      requireAnyAdmin(auth);
+    } else {
+      requirePermission(auth, space, "admin");
+    }
     app.db.ensureSpace(space);
     sendJson(res, 200, { events: app.db.listAudit(space) });
     return;
@@ -149,6 +284,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
 
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "file" && method === "PUT") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "write");
     const filePath = queryPath(url);
     const body = await readBody(req);
     const next = app.db.getNextVersion(space, filePath);
@@ -162,7 +298,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
       storagePath: stored.storagePath,
       version: next.version,
       versionStoragePath: stored.versionStoragePath,
-      device: requestDevice(req),
+      device: auth.deviceName,
       operation: next.operation,
     });
     sendJson(res, 201, { file });
@@ -171,6 +307,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
 
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "file" && method === "GET") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "read");
     const filePath = queryPath(url);
     const file = app.db.getFile(space, filePath);
     if (!file || file.deletedAt) {
@@ -195,6 +332,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
 
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "file" && method === "DELETE") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "delete");
     const filePath = queryPath(url);
     const file = app.db.getFile(space, filePath);
     if (!file || file.deletedAt) {
@@ -202,13 +340,14 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     }
 
     const trashPath = await app.storage.moveCurrentToTrash(space, file.path, file.id, file.currentVersion);
-    const deleted = app.db.markDeleted(space, file.path, requestDevice(req));
+    const deleted = app.db.markDeleted(space, file.path, auth.deviceName);
     sendJson(res, 200, { file: deleted, trashPath });
     return;
   }
 
   if (segments.length === 4 && segments[0] === "spaces" && segments[2] === "file" && segments[3] === "restore" && method === "POST") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "write");
     const filePath = queryPath(url);
     const existing = app.db.getFile(space, filePath);
     if (!existing) {
@@ -226,7 +365,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     }
 
     await app.storage.restoreVersionToCurrent(versionRecord.storagePath, space, filePath);
-    const restored = app.db.restoreFile(space, filePath, version, requestDevice(req));
+    const restored = app.db.restoreFile(space, filePath, version, auth.deviceName);
     sendJson(res, 200, { file: restored });
     return;
   }
@@ -237,6 +376,7 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
 export async function createAgentVaultApp(overrides: AgentVaultConfigOverrides = {}): Promise<AgentVaultApp> {
   const config = await resolveConfig(overrides);
   const db = VaultDb.open(config.dbPath);
+  db.ensureBootstrapDevice(tokenHash(config.token));
   const storage = new FileStorage({ root: config.storageRoot });
 
   const app: AgentVaultApp = {

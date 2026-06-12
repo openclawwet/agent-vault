@@ -37,15 +37,27 @@ curl -H "Authorization: Bearer $(cat ~/.agent-vault/dev-token)" http://127.0.0.1
 curl -X PUT \
   -H "Authorization: Bearer $(cat ~/.agent-vault/dev-token)" \
   --data-binary @README.md \
-  "http://127.0.0.1:3474/spaces/default/file?path=docs/readme.md"
+  "http://127.0.0.1:3474/spaces/Inbox/file?path=docs/readme.md"
 
 curl -H "Authorization: Bearer $(cat ~/.agent-vault/dev-token)" \
-  "http://127.0.0.1:3474/spaces/default/files"
+  "http://127.0.0.1:3474/spaces/Inbox/files"
 
 curl -H "Authorization: Bearer $(cat ~/.agent-vault/dev-token)" \
-  "http://127.0.0.1:3474/spaces/default/file?path=docs/readme.md" \
+  "http://127.0.0.1:3474/spaces/Inbox/file?path=docs/readme.md" \
   -o readme-copy.md
 ```
+
+Create a scoped device token:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $(cat ~/.agent-vault/dev-token)" \
+  -H "content-type: application/json" \
+  -d '{"name":"macbook","scopes":[{"space":"Inbox","permissions":["read","write"]}]}' \
+  http://127.0.0.1:3474/devices
+```
+
+Device tokens are stored hashed in SQLite and returned only once when created or rotated.
 
 ## Configuration
 

@@ -4,11 +4,15 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   DEFAULT_SPACE,
+  DEFAULT_SPACES,
   type AuditEventRecord,
   type AuditOperation,
+  type DeviceRecord,
+  type DeviceScopeRecord,
   type SpaceInfo,
   type VaultFileRecord,
   type VaultFileVersionRecord,
+  type VaultPermission,
 } from "@agent-vault/core";
 
 interface FileRow {
@@ -50,6 +54,24 @@ interface SpaceRow {
   created_at: string;
 }
 
+interface DeviceRow {
+  id: string;
+  name: string;
+  token_hash: string;
+  created_at: string;
+  rotated_at: string | null;
+  disabled_at: string | null;
+}
+
+interface DeviceScopeRow {
+  device_id: string;
+  space: string;
+  can_read: number;
+  can_write: number;
+  can_delete: number;
+  can_admin: number;
+}
+
 export interface UpsertFileInput {
   id: string;
   space: string;
@@ -70,6 +92,17 @@ export interface AuditInput {
   path: string;
   version?: number | null;
   hash?: string | null;
+}
+
+export interface DeviceScopeInput {
+  space: string;
+  permissions: VaultPermission[];
+}
+
+export interface CreateDeviceInput {
+  name: string;
+  tokenHash: string;
+  scopes: DeviceScopeInput[];
 }
 
 function nowIso(): string {
@@ -123,6 +156,26 @@ function mapSpace(row: SpaceRow): SpaceInfo {
   };
 }
 
+function permissionsFromScopeRow(row: DeviceScopeRow): VaultPermission[] {
+  const permissions: VaultPermission[] = [];
+  if (row.can_read) permissions.push("read");
+  if (row.can_write) permissions.push("write");
+  if (row.can_delete) permissions.push("delete");
+  if (row.can_admin) permissions.push("admin");
+  return permissions;
+}
+
+function mapDevice(row: DeviceRow, scopes: DeviceScopeRecord[]): DeviceRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    scopes,
+    createdAt: row.created_at,
+    rotatedAt: row.rotated_at,
+    disabledAt: row.disabled_at,
+  };
+}
+
 export class VaultDb {
   constructor(private readonly db: DatabaseSync) {}
 
@@ -131,7 +184,7 @@ export class VaultDb {
     const db = new DatabaseSync(dbPath);
     const vaultDb = new VaultDb(db);
     vaultDb.migrate();
-    vaultDb.ensureSpace(DEFAULT_SPACE);
+    vaultDb.ensureDefaultSpaces();
     return vaultDb;
   }
 
@@ -182,6 +235,27 @@ export class VaultDb {
         hash TEXT,
         timestamp TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        rotated_at TEXT,
+        disabled_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS device_scopes (
+        device_id TEXT NOT NULL,
+        space TEXT NOT NULL,
+        can_read INTEGER NOT NULL DEFAULT 0,
+        can_write INTEGER NOT NULL DEFAULT 0,
+        can_delete INTEGER NOT NULL DEFAULT 0,
+        can_admin INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(device_id, space),
+        FOREIGN KEY(device_id) REFERENCES devices(id) ON DELETE CASCADE,
+        FOREIGN KEY(space) REFERENCES spaces(name) ON DELETE CASCADE
+      );
     `);
   }
 
@@ -196,9 +270,99 @@ export class VaultDb {
     return mapSpace(row);
   }
 
+  ensureDefaultSpaces(): void {
+    for (const space of DEFAULT_SPACES) {
+      this.ensureSpace(space);
+    }
+    this.ensureSpace(DEFAULT_SPACE);
+  }
+
+  ensureBootstrapDevice(tokenHashValue: string): DeviceRecord {
+    const existing = this.getDeviceByName("local-admin");
+    const scopes = DEFAULT_SPACES.map((space) => ({
+      space,
+      permissions: ["read", "write", "delete", "admin"] satisfies VaultPermission[],
+    }));
+
+    if (!existing) {
+      return this.createDevice({
+        name: "local-admin",
+        tokenHash: tokenHashValue,
+        scopes,
+      });
+    }
+
+    this.db.prepare("UPDATE devices SET token_hash = ?, rotated_at = ? WHERE id = ?").run(tokenHashValue, nowIso(), existing.id);
+    this.replaceDeviceScopes(existing.id, scopes);
+    return this.getDeviceByName("local-admin") ?? existing;
+  }
+
   listSpaces(): SpaceInfo[] {
     const rows = this.db.prepare("SELECT name, created_at FROM spaces ORDER BY name").all() as unknown as SpaceRow[];
     return rows.map(mapSpace);
+  }
+
+  getDeviceByTokenHash(hash: string): DeviceRecord | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT id, name, token_hash, created_at, rotated_at, disabled_at FROM devices WHERE token_hash = ? AND disabled_at IS NULL",
+      )
+      .get(hash) as unknown as DeviceRow | undefined;
+    return row ? this.mapDeviceWithScopes(row) : undefined;
+  }
+
+  getDeviceByName(name: string): DeviceRecord | undefined {
+    const row = this.db
+      .prepare("SELECT id, name, token_hash, created_at, rotated_at, disabled_at FROM devices WHERE name = ?")
+      .get(name) as unknown as DeviceRow | undefined;
+    return row ? this.mapDeviceWithScopes(row) : undefined;
+  }
+
+  getDeviceById(id: string): DeviceRecord | undefined {
+    const row = this.db
+      .prepare("SELECT id, name, token_hash, created_at, rotated_at, disabled_at FROM devices WHERE id = ?")
+      .get(id) as unknown as DeviceRow | undefined;
+    return row ? this.mapDeviceWithScopes(row) : undefined;
+  }
+
+  listDevices(): DeviceRecord[] {
+    const rows = this.db
+      .prepare("SELECT id, name, token_hash, created_at, rotated_at, disabled_at FROM devices ORDER BY name")
+      .all() as unknown as DeviceRow[];
+    return rows.map((row) => this.mapDeviceWithScopes(row));
+  }
+
+  createDevice(input: CreateDeviceInput): DeviceRecord {
+    const id = randomUUID();
+    const createdAt = nowIso();
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)")
+        .run(id, input.name, input.tokenHash, createdAt);
+      this.replaceDeviceScopes(id, input.scopes);
+      this.db.exec("COMMIT");
+    } catch (error: unknown) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    const device = this.getDeviceById(id);
+    if (!device) {
+      throw new Error("Failed to read device after create.");
+    }
+    return device;
+  }
+
+  rotateDeviceToken(id: string, tokenHashValue: string): DeviceRecord {
+    const rotatedAt = nowIso();
+    this.db.prepare("UPDATE devices SET token_hash = ?, rotated_at = ? WHERE id = ?").run(tokenHashValue, rotatedAt, id);
+    const device = this.getDeviceById(id);
+    if (!device) {
+      throw new Error("Device was not found.");
+    }
+    return device;
   }
 
   getFile(space: string, filePath: string): VaultFileRecord | undefined {
@@ -418,5 +582,43 @@ export class VaultDb {
         nowIso(),
       );
     return id;
+  }
+
+  private mapDeviceWithScopes(row: DeviceRow): DeviceRecord {
+    const scopeRows = this.db
+      .prepare(
+        "SELECT device_id, space, can_read, can_write, can_delete, can_admin FROM device_scopes WHERE device_id = ? ORDER BY space",
+      )
+      .all(row.id) as unknown as DeviceScopeRow[];
+    return mapDevice(
+      row,
+      scopeRows.map((scopeRow) => ({
+        space: scopeRow.space,
+        permissions: permissionsFromScopeRow(scopeRow),
+      })),
+    );
+  }
+
+  private replaceDeviceScopes(deviceId: string, scopes: DeviceScopeInput[]): void {
+    this.db.prepare("DELETE FROM device_scopes WHERE device_id = ?").run(deviceId);
+    const insert = this.db.prepare(
+      `
+      INSERT INTO device_scopes (device_id, space, can_read, can_write, can_delete, can_admin)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    );
+
+    for (const scope of scopes) {
+      this.ensureSpace(scope.space);
+      const permissions = new Set(scope.permissions);
+      insert.run(
+        deviceId,
+        scope.space,
+        permissions.has("read") ? 1 : 0,
+        permissions.has("write") ? 1 : 0,
+        permissions.has("delete") ? 1 : 0,
+        permissions.has("admin") ? 1 : 0,
+      );
+    }
   }
 }
