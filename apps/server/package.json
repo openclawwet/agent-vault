@@ -1,0 +1,16 @@
+{
+  "name": "@agent-vault/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "pnpm build && node --disable-warning=ExperimentalWarning dist/index.js",
+    "smoke:local": "pnpm build && node --disable-warning=ExperimentalWarning dist/smoke.js"
+  },
+  "dependencies": {
+    "@agent-vault/core": "workspace:*",
+    "@agent-vault/storage": "workspace:*"
+  }
+}
