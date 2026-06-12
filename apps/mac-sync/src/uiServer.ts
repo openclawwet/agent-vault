@@ -1,14 +1,14 @@
 import { execFile, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ChangeEventRecord, DeviceStatusRecord, SpaceAccessInfo, VaultFileRecord, VaultServerStatus } from "@agent-vault/core";
 import type { MacSyncConfig } from "./config.js";
 import { configWithShareIgnores, syncAllSources, summaryChanged } from "./autoSync.js";
 import { readActivity, recordActivity } from "./activityLog.js";
 import { scanLocal } from "./localState.js";
-import { addShare, loadShareConfig, removeShare, type ShareRecord } from "./shareConfig.js";
+import { addShare, loadShareConfig, normalizeShareAccess, removeShare, updateShare, type ShareRecord } from "./shareConfig.js";
 import { shareStatus, syncShare } from "./shareSync.js";
 import { statusCommand } from "./syncCommands.js";
 import { VaultClient } from "./vaultClient.js";
@@ -127,12 +127,16 @@ function changedCount(actions: Awaited<ReturnType<typeof statusCommand>>["action
 
 async function summarizeShare(config: MacSyncConfig, share: ShareRecord) {
   try {
-    const [files, status] = await Promise.all([scanLocal(share.localDir), shareStatus(config, share)]);
+    const [files, status] = await Promise.all([
+      scanLocal(share.localDir, { ignoreNames: share.ignoreNames, ignorePathPrefixes: share.ignorePathPrefixes }),
+      shareStatus(config, share),
+    ]);
     const localSize = files.reduce((sum, file) => sum + file.size, 0);
     return {
       ...share,
       localFileCount: files.length,
       localSize,
+      localTree: fileTree(files, "", 700),
       pendingActions: changedCount(status.actions),
       available: true,
     };
@@ -141,6 +145,7 @@ async function summarizeShare(config: MacSyncConfig, share: ShareRecord) {
       ...share,
       localFileCount: 0,
       localSize: 0,
+      localTree: [],
       pendingActions: 0,
       available: false,
       error: error instanceof Error ? error.message : "Share is unavailable.",
@@ -159,6 +164,125 @@ function folderTree(files: VaultFileRecord[]): Array<{ path: string; count: numb
     folders.set(folder, current);
   }
   return [...folders.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+type TreeNodeKind = "folder" | "file";
+
+interface TreeNode {
+  name: string;
+  path: string;
+  kind: TreeNodeKind;
+  count: number;
+  size: number;
+  truncated?: boolean;
+  children?: TreeNode[];
+}
+
+interface TreeFile {
+  path: string;
+  size: number;
+}
+
+function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
+  const root: TreeNode = { name: "root", path: "", kind: "folder", count: 0, size: 0, children: [] };
+  let nodeCount = 0;
+  const cleanPrefix = prefix.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+  const scoped = files
+    .map((file) => {
+      const cleanPath = file.path.replaceAll("\\", "/").replace(/^\/+/, "");
+      if (cleanPrefix) {
+        if (cleanPath === cleanPrefix) return undefined;
+        if (!cleanPath.startsWith(`${cleanPrefix}/`)) return undefined;
+        return { path: cleanPath.slice(cleanPrefix.length + 1), size: file.size };
+      }
+      return { path: cleanPath, size: file.size };
+    })
+    .filter((file): file is TreeFile => Boolean(file))
+    .filter((file) => file.path && !file.path.endsWith("/.agent-vault-folder"))
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  for (const file of scoped) {
+    if (nodeCount >= maxNodes) {
+      root.truncated = true;
+      break;
+    }
+    const parts = file.path.split("/").filter(Boolean);
+    let cursor = root;
+    cursor.count += 1;
+    cursor.size += file.size;
+    for (let index = 0; index < parts.length; index += 1) {
+      const part = parts[index]!;
+      const isFile = index === parts.length - 1;
+      cursor.children ??= [];
+      let child = cursor.children.find((item) => item.name === part && item.kind === (isFile ? "file" : "folder"));
+      if (!child) {
+        const childPath = parts.slice(0, index + 1).join("/");
+        child = {
+          name: part,
+          path: childPath,
+          kind: isFile ? "file" : "folder",
+          count: 0,
+          size: 0,
+          children: isFile ? undefined : [],
+        };
+        cursor.children.push(child);
+        nodeCount += 1;
+      }
+      child.count += 1;
+      child.size += file.size;
+      cursor = child;
+    }
+  }
+
+  function sortNodes(nodes: TreeNode[] = []): TreeNode[] {
+    return nodes
+      .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1))
+      .map((node) => ({ ...node, children: node.children ? sortNodes(node.children) : undefined }));
+  }
+
+  return sortNodes(root.children);
+}
+
+function remoteSourcePrefix(filePath: string): { label: string; prefix: string; origin: string } | undefined {
+  const parts = filePath.split("/").filter(Boolean);
+  if (!parts.length) return undefined;
+  if (parts[0] === "Mac Mini" && parts[1]) {
+    return { label: parts[1], prefix: `${parts[0]}/${parts[1]}`, origin: "Mac Mini" };
+  }
+  return { label: parts[0], prefix: parts[0], origin: "Vault" };
+}
+
+function remoteSourcesForSpace(space: string, files: VaultFileRecord[]) {
+  const groups = new Map<
+    string,
+    { id: string; kind: "remote"; label: string; space: string; remotePathPrefix: string; origin: string; remoteFileCount: number; remoteSize: number }
+  >();
+
+  for (const file of files) {
+    const source = remoteSourcePrefix(file.path);
+    if (!source) continue;
+    const key = `${space}\0${source.prefix}`;
+    const current =
+      groups.get(key) ?? {
+        id: `remote:${space}:${source.prefix}`,
+        kind: "remote" as const,
+        label: source.label,
+        space,
+        remotePathPrefix: source.prefix,
+        origin: source.origin,
+        remoteFileCount: 0,
+        remoteSize: 0,
+      };
+    current.remoteFileCount += 1;
+    current.remoteSize += file.size;
+    groups.set(key, current);
+  }
+
+  return [...groups.values()].map((source) => ({
+    ...source,
+    access: "readonly",
+    tree: fileTree(files, source.remotePathPrefix, 700),
+  }));
 }
 
 function belongsToPrefix(filePath: string, prefix: string): boolean {
@@ -310,6 +434,8 @@ async function buildSummary(config: MacSyncConfig) {
           size: files.reduce((sum, file) => sum + file.size, 0),
           folders: folderTree(files),
           files: files.slice(0, 200),
+          tree: fileTree(files, "", 700),
+          sources: remoteSourcesForSpace(space.name, files),
           recentChanges: changes.changes.slice(-40).reverse(),
         };
       } catch (error: unknown) {
@@ -320,6 +446,8 @@ async function buildSummary(config: MacSyncConfig) {
           size: 0,
           folders: [],
           files: [],
+          tree: [],
+          sources: [],
           recentChanges: [],
           error: error instanceof Error ? error.message : "Space failed.",
         };
@@ -333,16 +461,24 @@ async function buildSummary(config: MacSyncConfig) {
   const shares = localShares.map((share) => {
     const remoteSpace = remoteSpaces.find((space) => space.name === share.space);
     const remoteShareFiles = remoteSpace?.files.filter((file) => belongsToPrefix(file.path, share.remotePathPrefix)) ?? [];
+    const remoteSource = remoteSpace?.sources.find((source) => source.remotePathPrefix === share.remotePathPrefix);
     const lastRemoteChange = recentChanges.find(
       (change) => change.space === share.space && belongsToPrefix(change.path, share.remotePathPrefix),
     );
     return {
+      kind: "local" as const,
       ...share,
-      remoteFileCount: remoteShareFiles.length,
-      remoteSize: remoteShareFiles.reduce((sum, file) => sum + file.size, 0),
+      remoteFileCount: remoteSource?.remoteFileCount ?? remoteShareFiles.length,
+      remoteSize: remoteSource?.remoteSize ?? remoteShareFiles.reduce((sum, file) => sum + file.size, 0),
+      remoteTree: remoteSource?.tree ?? fileTree(remoteShareFiles, share.remotePathPrefix, 700),
       lastRemoteChange: lastRemoteChange?.timestamp ?? null,
     };
   });
+  const localSourceKeys = new Set(shares.map((share) => `${share.space}\0${share.remotePathPrefix}`));
+  const remoteSources = remoteSpaces
+    .flatMap((space) => space.sources)
+    .filter((source) => !localSourceKeys.has(`${source.space}\0${source.remotePathPrefix}`))
+    .sort((a, b) => a.label.localeCompare(b.label));
 
   return {
     serverUrl: config.serverUrl,
@@ -351,6 +487,7 @@ async function buildSummary(config: MacSyncConfig) {
     mainPendingActions: "actions" in mainStatus ? changedCount(mainStatus.actions) : 0,
     mainStatusError: "error" in mainStatus ? mainStatus.error : null,
     shares,
+    remoteSources,
     remoteSpaces,
     devices: deviceSummary.devices,
     server: deviceSummary.server,
@@ -401,6 +538,41 @@ async function createFolderMarker(config: MacSyncConfig, share: ShareRecord, fol
     summary: synced.summary,
   });
   return { folder, marker: ".agent-vault-folder", synced };
+}
+
+async function ingestLocalPath(config: MacSyncConfig, inputPath: string) {
+  const localPath = path.resolve(inputPath);
+  const localStat = await stat(localPath);
+  if (localStat.isDirectory()) {
+    const share = await addShare({
+      localDir: localPath,
+      space: config.space,
+      access: "readwrite",
+    });
+    const initialSync = await syncShare(config, share);
+    await recordActivity("share_added", `Dropped shared folder ${share.label}`, {
+      localDir: share.localDir,
+      space: share.space,
+      remotePathPrefix: share.remotePathPrefix,
+      initialSync: initialSync.summary,
+    });
+    return { kind: "share", share, initialSync };
+  }
+
+  if (!localStat.isFile()) {
+    throw new UiError(400, "unsupported_drop_path", "Dropped path must be a file or folder.");
+  }
+
+  const body = await readFile(localPath);
+  const filePath = `Desktop Drops/${path.basename(localPath)}`;
+  const uploaded = await new VaultClient(config.serverUrl, config.token).upload(
+    config.space,
+    filePath,
+    body,
+    `${config.deviceId}:${config.space}:native-drop:${filePath}:${randomUUID()}`,
+  );
+  await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space: config.space, path: filePath, size: body.byteLength });
+  return { kind: "file", file: uploaded };
 }
 
 function startUiAutoSync(config: MacSyncConfig): () => void {
@@ -483,6 +655,9 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       label: typeof body.label === "string" ? body.label : undefined,
       space: typeof body.space === "string" ? body.space : config.space,
       remotePathPrefix: typeof body.remotePathPrefix === "string" ? body.remotePathPrefix : undefined,
+      access: normalizeShareAccess(body.access),
+      ignoreNames: Array.isArray(body.ignoreNames) ? body.ignoreNames.map((item) => String(item)) : undefined,
+      ignorePathPrefixes: Array.isArray(body.ignorePathPrefixes) ? body.ignorePathPrefixes.map((item) => String(item)) : undefined,
     });
     const initialSync = await syncShare(config, share);
     await recordActivity("share_added", `Added shared folder ${share.label}`, {
@@ -492,6 +667,22 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       initialSync: initialSync.summary,
     });
     sendJson(res, 201, { share, initialSync });
+    return;
+  }
+
+  if (method === "PATCH" && route.length === 3 && route[0] === "api" && route[1] === "shares") {
+    const body = await readJson(req);
+    const share = await updateShare(route[2] ?? "", {
+      access: typeof body.access === "string" ? normalizeShareAccess(body.access) : undefined,
+      enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+      label: typeof body.label === "string" ? body.label : undefined,
+    });
+    await recordActivity("share_updated", `Updated shared folder ${share.label}`, {
+      id: share.id,
+      access: share.access,
+      enabled: share.enabled,
+    });
+    sendJson(res, 200, { share });
     return;
   }
 
@@ -547,6 +738,20 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
     );
     await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space, path: filePath, size: body.byteLength });
     sendJson(res, 201, { file: uploaded });
+    return;
+  }
+
+  if (method === "POST" && route.join("/") === "api/ingest-paths") {
+    const body = await readJson(req);
+    const paths = Array.isArray(body.paths) ? body.paths.map((item) => String(item)).filter(Boolean) : [];
+    if (!paths.length) {
+      throw new UiError(400, "missing_paths", "At least one local path is required.");
+    }
+    const results = [];
+    for (const localPath of paths) {
+      results.push(await ingestLocalPath(config, localPath));
+    }
+    sendJson(res, 201, { results });
     return;
   }
 
@@ -883,6 +1088,8 @@ function renderHtml(): string {
         width: min(290px, 42vw);
         min-height: 96px;
         padding-left: 74px;
+        border-radius: 12px;
+        cursor: pointer;
         animation: sourceIn 260ms ease both;
       }
       .source:nth-child(6n + 1) { left: 2%; top: 4%; }
@@ -907,6 +1114,13 @@ function renderHtml(): string {
         box-shadow: 0 22px 50px rgba(0, 0, 0, 0.22);
         backdrop-filter: blur(18px);
         -webkit-backdrop-filter: blur(18px);
+      }
+      .source.selected .folder-mark {
+        border-color: rgba(237, 230, 218, 0.28);
+        background: rgba(237, 230, 218, 0.09);
+      }
+      .source.selected .source-title {
+        color: #f4ecdf;
       }
       .folder-mark::before {
         content: "";
@@ -944,6 +1158,42 @@ function renderHtml(): string {
         align-items: center;
         color: rgba(237, 230, 218, 0.45);
         font-size: 11px;
+      }
+      .access-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 18px;
+        padding: 0 7px;
+        border: 1px solid rgba(237, 230, 218, 0.09);
+        border-radius: 999px;
+        font-size: 10px;
+        color: rgba(237, 230, 218, 0.58);
+      }
+      .access-chip::before {
+        content: "";
+        width: 4px;
+        height: 4px;
+        border-radius: 999px;
+        background: var(--accent);
+      }
+      .access-chip.readonly::before { background: var(--ok); }
+      .access-chip.writeonly::before { background: var(--warn); }
+      .access-chip.readwrite::before { background: var(--accent); }
+      .tiny-icon {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        margin-right: 4px;
+        vertical-align: -2px;
+        color: currentColor;
+      }
+      .tiny-icon svg {
+        width: 12px;
+        height: 12px;
+        stroke: currentColor;
+        stroke-width: 1.45;
+        fill: none;
       }
       .source-action {
         border: 0;
@@ -1011,10 +1261,44 @@ function renderHtml(): string {
       .side {
         flex: 0 0 330px;
         min-height: 0;
+        display: block;
+        padding: 42px 0 25px;
+        position: relative;
+      }
+      .system-sections {
+        height: 100%;
+        min-height: 0;
         display: grid;
         grid-template-rows: auto auto minmax(0, 0.82fr) minmax(0, 0.92fr);
         gap: 24px;
-        padding: 42px 0 25px;
+      }
+      .inspector-switch {
+        position: absolute;
+        right: 0;
+        top: 1px;
+        z-index: 4;
+        display: inline-flex;
+        gap: 4px;
+        padding: 3px;
+        border: 1px solid rgba(237, 230, 218, 0.08);
+        border-radius: 999px;
+        background: rgba(55, 54, 50, 0.28);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+      }
+      .switch-button {
+        height: 22px;
+        border: 0;
+        border-radius: 999px;
+        padding: 0 8px;
+        color: rgba(237, 230, 218, 0.44);
+        background: transparent;
+        font-size: 10.5px;
+        cursor: pointer;
+      }
+      .switch-button.active {
+        color: rgba(237, 230, 218, 0.82);
+        background: rgba(237, 230, 218, 0.075);
       }
       .side-section {
         min-height: 0;
@@ -1028,6 +1312,97 @@ function renderHtml(): string {
         padding: 15px 14px;
         backdrop-filter: blur(22px) saturate(1.04);
         -webkit-backdrop-filter: blur(22px) saturate(1.04);
+      }
+      .tree-section {
+        height: 100%;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 18px;
+        overflow: hidden;
+        padding-top: 45px;
+      }
+      .selected-source-head {
+        display: grid;
+        gap: 8px;
+      }
+      .selected-source-title {
+        margin: 0;
+        color: rgba(237, 230, 218, 0.9);
+        font-size: 18px;
+        line-height: 1.1;
+        font-weight: 570;
+        overflow-wrap: anywhere;
+      }
+      .selected-source-meta {
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .access-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+      .access-button {
+        min-height: 24px;
+        border: 1px solid rgba(237, 230, 218, 0.08);
+        border-radius: 999px;
+        padding: 0 8px;
+        color: rgba(237, 230, 218, 0.46);
+        background: transparent;
+        font-size: 10.5px;
+        cursor: pointer;
+      }
+      .access-button.active {
+        color: rgba(237, 230, 218, 0.84);
+        background: rgba(237, 230, 218, 0.075);
+      }
+      .tree-list {
+        min-height: 0;
+        overflow: auto;
+        padding-right: 6px;
+      }
+      .tree-list details {
+        margin: 0;
+        padding-left: 13px;
+        border-left: 1px solid rgba(237, 230, 218, 0.055);
+      }
+      .tree-list summary {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 25px;
+        color: rgba(237, 230, 218, 0.68);
+        font-size: 11.5px;
+        cursor: pointer;
+        list-style: none;
+      }
+      .tree-list summary::-webkit-details-marker {
+        display: none;
+      }
+      .tree-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        min-height: 24px;
+        padding-left: 13px;
+        color: rgba(237, 230, 218, 0.52);
+        font-size: 11px;
+      }
+      .tree-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tree-metric {
+        color: var(--faint);
+        font-size: 10px;
+        white-space: nowrap;
       }
       .side-head {
         display: flex;
@@ -1285,6 +1660,8 @@ function renderHtml(): string {
         }
         .side {
           flex-basis: auto;
+        }
+        .system-sections {
           grid-template-columns: 1fr 1fr;
           grid-template-rows: minmax(260px, auto);
         }
@@ -1306,6 +1683,8 @@ function renderHtml(): string {
           display: none;
         }
         .side {
+        }
+        .system-sections {
           grid-template-columns: 1fr;
         }
         .source:nth-child(n) {
@@ -1361,32 +1740,43 @@ function renderHtml(): string {
             </form>
           </section>
           <aside class="side">
-            <section class="side-section">
-              <div class="side-head">
-                <h2 class="side-title">devices</h2>
-                <span class="status-pill" id="deviceScope">local</span>
-              </div>
-              <div class="side-body" id="devices"></div>
+            <div class="inspector-switch hidden" id="inspectorSwitch">
+              <button class="switch-button active" data-side-mode="tree">tree</button>
+              <button class="switch-button" data-side-mode="system">system</button>
+            </div>
+            <section class="tree-section hidden" id="treeSection">
+              <div class="selected-source-head" id="selectedSource"></div>
+              <div class="access-controls" id="accessControls"></div>
+              <div class="tree-list" id="treeList"></div>
             </section>
-            <section class="side-section">
-              <div class="side-head">
-                <h2 class="side-title">flow</h2>
-                <span class="status-pill" id="pending">0 pending</span>
-              </div>
-              <div class="side-body" id="flow"></div>
-            </section>
-            <section class="side-section">
-              <div class="side-head">
-                <h2 class="side-title">structure</h2>
-              </div>
-              <div class="side-body" id="structure"></div>
-            </section>
-            <section class="side-section">
-              <div class="side-head">
-                <h2 class="side-title">log</h2>
-              </div>
-              <div class="side-body" id="activity"></div>
-            </section>
+            <div class="system-sections" id="systemSections">
+              <section class="side-section">
+                <div class="side-head">
+                  <h2 class="side-title">devices</h2>
+                  <span class="status-pill" id="deviceScope">local</span>
+                </div>
+                <div class="side-body" id="devices"></div>
+              </section>
+              <section class="side-section">
+                <div class="side-head">
+                  <h2 class="side-title">flow</h2>
+                  <span class="status-pill" id="pending">0 pending</span>
+                </div>
+                <div class="side-body" id="flow"></div>
+              </section>
+              <section class="side-section">
+                <div class="side-head">
+                  <h2 class="side-title">structure</h2>
+                </div>
+                <div class="side-body" id="structure"></div>
+              </section>
+              <section class="side-section">
+                <div class="side-head">
+                  <h2 class="side-title">log</h2>
+                </div>
+                <div class="side-body" id="activity"></div>
+              </section>
+            </div>
           </aside>
         </section>
         <section class="view schema-view" id="view-schema">
@@ -1415,6 +1805,8 @@ function renderHtml(): string {
       const state = {
         summary: null,
         view: "vault",
+        selectedSourceId: null,
+        sideMode: "system",
         schema: { scale: 1, x: 80, y: 48, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0, hasUserMoved: false },
         dragDepth: 0
       };
@@ -1447,6 +1839,19 @@ function renderHtml(): string {
         if (!scopes.length) return "no spaces";
         return scopes.map((scope) => scope.space + " " + (scope.permissions || []).join("")).join(" / ");
       };
+      const accessLabel = (access) => access === "readonly" ? "read only" : access === "writeonly" ? "write only" : "read + write";
+      const accessHint = (access) => access === "readonly"
+        ? "Mac Mini reads this folder into Vault"
+        : access === "writeonly"
+          ? "Vault writes into this folder"
+          : "Bidirectional sync";
+      const iconSvg = (name) => {
+        if (name === "open") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.5 5.5h9v7h-9z"/><path d="M5 5.5V3.8h3l1.2 1.7"/></svg></span>';
+        if (name === "folder") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2.7 5.4h10.6v7.1H2.7z"/><path d="M3.8 5.4V3.8h3l1.1 1.6"/></svg></span>';
+        if (name === "sync") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M12.5 5.2A4.7 4.7 0 0 0 4 3.9"/><path d="M4 2.2v1.7h1.7"/><path d="M3.5 10.8a4.7 4.7 0 0 0 8.5 1.3"/><path d="M12 13.8v-1.7h-1.7"/></svg></span>';
+        if (name === "remove") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></span>';
+        return "";
+      };
       const shortPath = (value) => {
         const text = String(value ?? "");
         const parts = text.split("/").filter(Boolean);
@@ -1460,8 +1865,23 @@ function renderHtml(): string {
         ? { scale: 0.72, x: 8, y: 46 }
         : { scale: 1, x: 80, y: 48 };
 
+      const allSources = () => {
+        const summary = state.summary;
+        if (!summary) return [];
+        return [
+          ...summary.shares.map((share) => ({ ...share, sourceKind: "local", sourceId: "local:" + share.id })),
+          ...(summary.remoteSources || []).map((source) => ({ ...source, sourceKind: "remote", sourceId: source.id }))
+        ];
+      };
+
+      const selectedSource = () => allSources().find((source) => source.sourceId === state.selectedSourceId) || null;
+
       async function refresh() {
         state.summary = await api("/api/summary");
+        if (state.selectedSourceId && !allSources().some((source) => source.sourceId === state.selectedSourceId)) {
+          state.selectedSourceId = null;
+          state.sideMode = "system";
+        }
         render();
       }
 
@@ -1481,26 +1901,38 @@ function renderHtml(): string {
         $("connection").textContent = serverName + " / " + summary.defaultSpace + " / autosync";
         $("pending").textContent = totalPending + " pending";
         $("deviceScope").textContent = summary.devicesPresenceVisible ? "presence" : "local";
-        $("shareCount").textContent = summary.shares.length + (summary.shares.length === 1 ? " source" : " sources") + " / autosync on";
-        $("shares").innerHTML = summary.shares.length ? summary.shares.map((share) =>
-          '<article class="source">' +
+        const sources = allSources();
+        $("shareCount").textContent = sources.length + (sources.length === 1 ? " source" : " sources") + " / autosync on";
+        $("shares").innerHTML = sources.length ? sources.map((source) => {
+          const isLocal = source.sourceKind === "local";
+          const selected = source.sourceId === state.selectedSourceId;
+          const pathText = isLocal ? source.localDir : source.origin + " / " + source.remotePathPrefix;
+          const localText = isLocal
+            ? (source.available ? fileLabel(source.localFileCount) + " / " + fmtSize(source.localSize) : "offline")
+            : "remote";
+          const pendingText = isLocal ? (source.pendingActions ? source.pendingActions + " pending" : "synced") : "readable";
+          const actions = isLocal
+            ? '<button class="source-action" data-open="' + esc(source.localDir) + '">' + iconSvg("open") + 'open</button>' +
+              '<button class="source-action" data-folder="' + esc(source.id) + '">' + iconSvg("folder") + 'folder</button>' +
+              '<button class="source-action" data-sync="' + esc(source.id) + '">' + iconSvg("sync") + 'sync</button>' +
+              '<button class="source-action danger" data-remove="' + esc(source.id) + '">' + iconSvg("remove") + 'remove</button>'
+            : '<button class="source-action" data-select-source="' + esc(source.sourceId) + '">' + iconSvg("folder") + 'tree</button>';
+          return '<article class="source ' + (selected ? "selected" : "") + '" data-select-source="' + esc(source.sourceId) + '">' +
             '<span class="folder-mark" aria-hidden="true"></span>' +
-            '<div class="source-title">' + esc(share.label) + '</div>' +
-            '<div class="source-path" title="' + esc(share.localDir) + '">' + esc(shortPath(share.localDir)) + '</div>' +
+            '<div class="source-title">' + esc(source.label) + '</div>' +
+            '<div class="source-path" title="' + esc(pathText) + '">' + esc(shortPath(pathText)) + '</div>' +
             '<div class="source-line">' +
-              '<span>' + (share.available ? fileLabel(share.localFileCount) + ' / ' + fmtSize(share.localSize) : "offline") + '</span>' +
+              '<span class="access-chip ' + esc(source.access) + '" title="' + esc(accessHint(source.access)) + '">' + esc(accessLabel(source.access)) + '</span>' +
+              '<span>' + localText + '</span>' +
               '<span>/</span>' +
-              '<span>' + share.remoteFileCount + ' remote / ' + fmtSize(share.remoteSize) + '</span>' +
+              '<span>' + source.remoteFileCount + ' remote / ' + fmtSize(source.remoteSize) + '</span>' +
               '<span>/</span>' +
-              '<span>' + (share.pendingActions ? share.pendingActions + ' pending' : 'synced') + '</span>' +
+              '<span>' + pendingText + '</span>' +
               '<span>/</span>' +
-              '<button class="source-action" data-open="' + esc(share.localDir) + '">open</button>' +
-              '<button class="source-action" data-folder="' + esc(share.id) + '">folder</button>' +
-              '<button class="source-action" data-sync="' + esc(share.id) + '">sync</button>' +
-              '<button class="source-action danger" data-remove="' + esc(share.id) + '">remove</button>' +
+              actions +
             '</div>' +
-          '</article>'
-        ).join("") : '<div class="source empty">Press + to add a folder. Drop files or folders anywhere in this window for quick uploads.</div>';
+          '</article>';
+        }).join("") : '<div class="source empty">Press + to add a folder. Drop files or folders anywhere in this window for quick uploads.</div>';
         const serverRow = '<div class="device server-device">' +
           '<div class="device-name"><span class="device-status"><span class="status-dot ' + esc(serverStatus) + '"></span>' + esc(serverName) + '</span></div>' +
           '<div class="device-meta">server</div>' +
@@ -1551,7 +1983,49 @@ function renderHtml(): string {
           '</div>'
         );
         $("activity").innerHTML = remoteLog.concat(localLog).join("") || '<div class="empty-note">No activity yet.</div>';
+        renderInspector();
         renderSchema();
+      }
+
+      function renderTreeNodes(nodes, depth = 0) {
+        if (!nodes?.length) return '<div class="empty-note">No files in this source yet.</div>';
+        return nodes.map((node) => {
+          const metric = node.kind === "folder" ? node.count + " / " + fmtSize(node.size) : fmtSize(node.size);
+          if (node.kind === "folder") {
+            const open = depth < 1 ? " open" : "";
+            return '<details' + open + '>' +
+              '<summary><span class="tree-name">' + esc(node.name) + '</span><span class="tree-metric">' + metric + '</span></summary>' +
+              renderTreeNodes(node.children || [], depth + 1) +
+            '</details>';
+          }
+          return '<div class="tree-row"><span class="tree-name">' + esc(node.name) + '</span><span class="tree-metric">' + metric + '</span></div>';
+        }).join("");
+      }
+
+      function renderInspector() {
+        const source = selectedSource();
+        const showTree = Boolean(source && state.sideMode === "tree");
+        $("inspectorSwitch").classList.toggle("hidden", !source);
+        $("treeSection").classList.toggle("hidden", !showTree);
+        $("systemSections").classList.toggle("hidden", showTree);
+        document.querySelectorAll("[data-side-mode]").forEach((button) => button.classList.toggle("active", button.dataset.sideMode === state.sideMode));
+        if (!source) return;
+
+        const isLocal = source.sourceKind === "local";
+        const pathText = isLocal ? source.localDir : source.origin + " / " + source.remotePathPrefix;
+        const tree = isLocal ? (source.remoteTree?.length ? source.remoteTree : source.localTree) : source.tree;
+        $("selectedSource").innerHTML =
+          '<h2 class="selected-source-title">' + esc(source.label) + '</h2>' +
+          '<div class="selected-source-meta">' + esc(pathText) + '</div>' +
+          '<div class="selected-source-meta">' + esc(fileLabel(source.remoteFileCount)) + ' / ' + esc(fmtSize(source.remoteSize)) + ' / ' + esc(accessLabel(source.access)) + '</div>';
+        $("accessControls").innerHTML = isLocal ? [
+          ["readonly", "read"],
+          ["writeonly", "write"],
+          ["readwrite", "both"]
+        ].map(([mode, label]) =>
+          '<button class="access-button ' + (source.access === mode ? "active" : "") + '" data-access="' + mode + '" data-share-id="' + esc(source.id) + '">' + label + '</button>'
+        ).join("") : '<span class="access-chip readonly">read only</span>';
+        $("treeList").innerHTML = renderTreeNodes(tree || []);
       }
 
       function renderOffline(message) {
@@ -1569,6 +2043,9 @@ function renderHtml(): string {
         $("flow").innerHTML = "";
         $("structure").innerHTML = '<div class="empty-note">Waiting for Vault status.</div>';
         $("activity").innerHTML = '<div class="empty-note">No live log while reconnecting.</div>';
+        $("inspectorSwitch").classList.add("hidden");
+        $("treeSection").classList.add("hidden");
+        $("systemSections").classList.remove("hidden");
       }
 
       function schemaNode(id, kind, title, meta, x, y, extra = "") {
@@ -1635,6 +2112,22 @@ function renderHtml(): string {
           body: file
         });
       }
+      function droppedLocalPaths(event) {
+        const uriList = event.dataTransfer?.getData("text/uri-list") || "";
+        return uriList
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line && !line.startsWith("#"))
+          .map((line) => {
+            try {
+              const url = new URL(line);
+              return url.protocol === "file:" ? decodeURIComponent(url.pathname) : "";
+            } catch {
+              return "";
+            }
+          })
+          .filter(Boolean);
+      }
       async function walkEntry(entry, prefix = "") {
         if (entry.isFile) {
           return new Promise((resolve, reject) => entry.file((file) => resolve([{ file, path: prefix + file.name }]), reject));
@@ -1651,6 +2144,18 @@ function renderHtml(): string {
         state.dragDepth = 0;
         document.body.classList.remove("dragging");
         if (!state.summary) await refresh();
+        const localPaths = droppedLocalPaths(event);
+        if (localPaths.length) {
+          toast("Adding dropped paths");
+          await api("/api/ingest-paths", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ paths: localPaths })
+          });
+          await refresh();
+          toast("Drop complete");
+          return;
+        }
         const items = [...(event.dataTransfer?.items || [])];
         let files = [];
         for (const item of items) {
@@ -1692,14 +2197,42 @@ function renderHtml(): string {
       document.querySelectorAll("[data-view]").forEach((button) => {
         button.addEventListener("click", () => setView(button.dataset.view));
       });
+      document.querySelectorAll("[data-side-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.sideMode = button.dataset.sideMode;
+          renderInspector();
+        });
+      });
       document.addEventListener("click", async (event) => {
         const target = event.target instanceof HTMLElement ? event.target : null;
+        const sourceNode = target?.closest?.("[data-select-source]");
+        const selectedId = target?.dataset?.selectSource || sourceNode?.dataset?.selectSource;
+        if (selectedId) {
+          state.selectedSourceId = selectedId;
+          state.sideMode = "tree";
+          render();
+        }
+        const accessMode = target?.dataset?.access;
+        const accessShareId = target?.dataset?.shareId;
         const removeId = target?.dataset?.remove;
         const syncId = target?.dataset?.sync;
         const openFolder = target?.dataset?.open;
         const folderId = target?.dataset?.folder;
+        if (accessMode && accessShareId) {
+          await api("/api/shares/" + encodeURIComponent(accessShareId), {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ access: accessMode })
+          });
+          await refresh();
+          toast("Permission updated");
+        }
         if (removeId) {
           await api("/api/shares/" + encodeURIComponent(removeId), { method: "DELETE" });
+          if (state.selectedSourceId === "local:" + removeId) {
+            state.selectedSourceId = null;
+            state.sideMode = "system";
+          }
           await refresh();
         }
         if (folderId) {
@@ -1743,6 +2276,10 @@ function renderHtml(): string {
         if (state.dragDepth === 0) document.body.classList.remove("dragging");
       });
       document.addEventListener("drop", handleDrop);
+      window.__agentVaultNativeRefresh = async (message) => {
+        await refresh();
+        toast(message || "Updated");
+      };
 
       $("zoomIn").addEventListener("click", () => {
         state.schema.hasUserMoved = true;

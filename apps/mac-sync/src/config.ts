@@ -12,6 +12,8 @@ export interface MacSyncConfig {
   space: string;
   remotePathPrefix?: string;
   ignoreRemotePathPrefixes?: string[];
+  localIgnoreNames?: string[];
+  localIgnorePathPrefixes?: string[];
 }
 
 export interface InitConfigInput {
@@ -44,6 +46,8 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<MacS
     localDir: path.resolve(expandHome(parsed.localDir)),
     remotePathPrefix: parsed.remotePathPrefix?.trim() || undefined,
     ignoreRemotePathPrefixes: parsed.ignoreRemotePathPrefixes?.map((value) => value.trim()).filter(Boolean),
+    localIgnoreNames: parsed.localIgnoreNames?.map((value) => value.trim()).filter(Boolean),
+    localIgnorePathPrefixes: parsed.localIgnorePathPrefixes?.map((value) => value.trim()).filter(Boolean),
   };
 }
 

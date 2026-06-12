@@ -8,6 +8,11 @@ export interface LocalFileEntry {
   size: number;
 }
 
+export interface LocalScanOptions {
+  ignoreNames?: readonly string[];
+  ignorePathPrefixes?: readonly string[];
+}
+
 export interface SyncStateEntry {
   baseHash: string | null;
 }
@@ -48,17 +53,35 @@ export async function hashFile(filePath: string): Promise<string> {
   return createHash("sha256").update(body).digest("hex");
 }
 
-export async function scanLocal(localDir: string): Promise<LocalFileEntry[]> {
+function normalizedPrefix(value: string): string {
+  return value.replaceAll("\\", "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function isIgnored(relativePath: string, name: string, options: LocalScanOptions): boolean {
+  const ignoredNames = new Set([".agent-vault", ...(options.ignoreNames ?? [])]);
+  if (ignoredNames.has(name)) {
+    return true;
+  }
+
+  const normalized = normalizedPrefix(relativePath);
+  return (options.ignorePathPrefixes ?? [])
+    .map(normalizedPrefix)
+    .filter(Boolean)
+    .some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`));
+}
+
+export async function scanLocal(localDir: string, options: LocalScanOptions = {}): Promise<LocalFileEntry[]> {
   const root = path.resolve(localDir);
   const results: LocalFileEntry[] = [];
 
   async function walk(current: string): Promise<void> {
     const entries = await readdir(current, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === ".agent-vault") {
+      const absolute = path.join(current, entry.name);
+      const relative = path.relative(root, absolute).split(path.sep).join("/");
+      if (isIgnored(relative, entry.name, options)) {
         continue;
       }
-      const absolute = path.join(current, entry.name);
       if (entry.isDirectory()) {
         await walk(absolute);
         continue;
@@ -66,7 +89,6 @@ export async function scanLocal(localDir: string): Promise<LocalFileEntry[]> {
       if (!entry.isFile()) {
         continue;
       }
-      const relative = path.relative(root, absolute).split(path.sep).join("/");
       const fileStat = await stat(absolute);
       results.push({
         path: relative,

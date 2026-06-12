@@ -54,6 +54,9 @@ try {
   assert(html.includes("dropSurface"), "desktop UI HTML missing global drop surface");
   assert(html.includes('id="devices"'), "desktop UI HTML missing devices section");
   assert(html.includes('id="flow"'), "desktop UI HTML missing flow section");
+  assert(html.includes('id="treeSection"'), "desktop UI HTML missing tree inspector");
+  assert(html.includes('data-side-mode="tree"'), "desktop UI HTML missing tree/system switch");
+  assert(html.includes('data-access'), "desktop UI HTML missing permission controls");
   assert(!html.includes('id="openFolder"'), "desktop UI should not render the old top open button");
   assert(!html.includes("dropzone"), "desktop UI should not render the old dropzone");
 
@@ -71,6 +74,16 @@ try {
   const shareJson = await expectJson(addShare);
   const share = shareJson.share as { id?: string } | undefined;
   assert(share?.id, "share id missing");
+
+  const updateShare = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares/${share.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ access: "readonly" }),
+  });
+  assert(updateShare.status === 200, `share permission update failed with ${updateShare.status}`);
+  const updatedShareJson = await expectJson(updateShare);
+  const updatedShare = updatedShareJson.share as { access?: string } | undefined;
+  assert(updatedShare?.access === "readonly", "share permission was not updated");
 
   const files = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/files`, {
     headers: { authorization: `Bearer ${token}` },
@@ -96,6 +109,16 @@ try {
     "shared empty folder marker was not uploaded",
   );
 
+  const droppedDir = path.join(tempRoot, "Dropped Docs");
+  await mkdir(droppedDir, { recursive: true });
+  await writeFile(path.join(droppedDir, "drop.txt"), "native folder drop\n");
+  const ingest = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/ingest-paths`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths: [droppedDir] }),
+  });
+  assert(ingest.status === 201, `native path ingest failed with ${ingest.status}`);
+
   const summary = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/summary`);
   assert(summary.ok, "summary failed");
   const summaryJson = await expectJson(summary);
@@ -105,6 +128,10 @@ try {
   assert(server?.name === "Mac Mini Vault Server" && server.status === "online", "summary should include Mac Mini server presence");
   assert(devices?.some((device) => device.status === "online"), "summary should include online device presence");
   assert(activity?.length, "activity log should include share work");
+  const shares = summaryJson.shares as Array<{ label?: string; access?: string; remoteTree?: unknown[] }> | undefined;
+  assert(shares?.some((item) => item.label === "Client Docs" && item.access === "readonly"), "summary should include updated share access");
+  assert(shares?.some((item) => item.label === "Dropped Docs"), "summary should include natively dropped folder share");
+  assert(shares?.some((item) => Array.isArray(item.remoteTree)), "summary should include tree data");
 
   console.log("Agent Vault desktop UI smoke passed.");
 } finally {

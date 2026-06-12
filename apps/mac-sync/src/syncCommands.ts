@@ -26,6 +26,13 @@ function client(config: MacSyncConfig): VaultClient {
   return new VaultClient(config.serverUrl, config.token);
 }
 
+function localScanOptions(config: MacSyncConfig) {
+  return {
+    ignoreNames: config.localIgnoreNames ?? [],
+    ignorePathPrefixes: config.localIgnorePathPrefixes ?? [],
+  };
+}
+
 function byPath<T extends { path: string }>(entries: T[]): Map<string, T> {
   return new Map(entries.map((entry) => [entry.path, entry]));
 }
@@ -98,11 +105,11 @@ async function conflict(localDir: string, filePath: string, details: unknown): P
 }
 
 export async function scanCommand(config: MacSyncConfig): Promise<LocalFileEntry[]> {
-  return scanLocal(config.localDir);
+  return scanLocal(config.localDir, localScanOptions(config));
 }
 
 export async function statusCommand(config: MacSyncConfig): Promise<{ actions: ReturnType<typeof planSync> }> {
-  const local = await scanLocal(config.localDir);
+  const local = await scanLocal(config.localDir, localScanOptions(config));
   const state = await readState(config.localDir);
   const vault = client(config);
   const remote = await listScopedRemoteFiles(config, vault);
@@ -123,7 +130,7 @@ export async function statusCommand(config: MacSyncConfig): Promise<{ actions: R
 
 export async function pushCommand(config: MacSyncConfig): Promise<SyncSummary> {
   const vault = client(config);
-  const local = await scanLocal(config.localDir);
+  const local = await scanLocal(config.localDir, localScanOptions(config));
   const localMap = byPath(local);
   const remote = await listScopedRemoteFiles(config, vault);
   const remoteMap = byPath(remote);
@@ -187,7 +194,7 @@ export async function pushCommand(config: MacSyncConfig): Promise<SyncSummary> {
 
 export async function pullCommand(config: MacSyncConfig): Promise<SyncSummary> {
   const vault = client(config);
-  const local = await scanLocal(config.localDir);
+  const local = await scanLocal(config.localDir, localScanOptions(config));
   const localMap = byPath(local);
   const remote = await listScopedRemoteFiles(config, vault);
   const remoteMap = byPath(remote);

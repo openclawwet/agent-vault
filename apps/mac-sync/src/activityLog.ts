@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-export type ActivityKind = "share_added" | "share_removed" | "sync" | "drop_upload" | "error";
+export type ActivityKind = "share_added" | "share_removed" | "share_updated" | "sync" | "drop_upload" | "error";
 
 export interface ActivityEntry {
   id: string;
@@ -51,4 +51,3 @@ export async function readActivity(limit = 80, logPath = defaultActivityLogPath(
     return [];
   }
 }
-

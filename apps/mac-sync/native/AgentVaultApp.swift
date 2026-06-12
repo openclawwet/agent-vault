@@ -69,6 +69,37 @@ final class DragHandleView: NSView {
     }
 }
 
+final class DropWebView: WKWebView {
+    var onLocalFileDrop: (([URL]) -> Void)?
+
+    override init(frame: NSRect, configuration: WKWebViewConfiguration) {
+        super.init(frame: frame, configuration: configuration)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+              !urls.isEmpty else {
+            return false
+        }
+        onLocalFileDrop?(urls)
+        return true
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var webView: WKWebView?
@@ -130,9 +161,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let configuration = WKWebViewConfiguration()
         configuration.allowsAirPlayForMediaPlayback = false
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = DropWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = false
         webView.setValue(false, forKey: "drawsBackground")
+        webView.onLocalFileDrop = { [weak self] urls in
+            self?.handleDroppedUrls(urls)
+        }
         webView.loadHTMLString(loadingHtml("Starting Agent Vault"), baseURL: nil)
 
         let window = NSWindow(
@@ -395,6 +429,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
             DispatchQueue.main.async {
                 self?.pollSummary()
+            }
+        }.resume()
+    }
+
+    private func handleDroppedUrls(_ urls: [URL]) {
+        guard let baseUrl = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/ingest-paths") else { return }
+        let paths = urls.map { $0.path }.filter { !$0.isEmpty }
+        guard !paths.isEmpty else { return }
+
+        var request = URLRequest(url: baseUrl)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["paths": paths], options: [])
+
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                self?.pollSummary()
+                self?.webView?.evaluateJavaScript("window.__agentVaultNativeRefresh && window.__agentVaultNativeRefresh('Drop complete')", completionHandler: nil)
             }
         }.resume()
     }
