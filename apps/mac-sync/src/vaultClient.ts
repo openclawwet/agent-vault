@@ -1,4 +1,12 @@
-import type { ChangeEventRecord, ListFilesResult, ListSpacesResult, SpaceAccessInfo, VaultFileRecord } from "@agent-vault/core";
+import type {
+  ChangeEventRecord,
+  CurrentDeviceResult,
+  DeviceRecord,
+  ListFilesResult,
+  ListSpacesResult,
+  SpaceAccessInfo,
+  VaultFileRecord,
+} from "@agent-vault/core";
 
 export class VaultClient {
   constructor(
@@ -16,6 +24,17 @@ export class VaultClient {
     const response = await this.request("/spaces");
     const body = (await response.json()) as ListSpacesResult;
     return body.spaces;
+  }
+
+  async me(): Promise<CurrentDeviceResult> {
+    const response = await this.request("/me");
+    return (await response.json()) as CurrentDeviceResult;
+  }
+
+  async listDevices(): Promise<DeviceRecord[]> {
+    const response = await this.request("/devices");
+    const body = (await response.json()) as { devices: DeviceRecord[] };
+    return body.devices;
   }
 
   async listChanges(space: string, since = 0): Promise<{ changes: ChangeEventRecord[]; cursor: number }> {

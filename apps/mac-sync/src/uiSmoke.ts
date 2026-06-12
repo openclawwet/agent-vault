@@ -52,6 +52,9 @@ try {
   assert(html.includes("Agent Vault"), "desktop UI HTML missing product name");
   assert(html.includes("view-schema"), "desktop UI HTML missing schema view");
   assert(html.includes("dropSurface"), "desktop UI HTML missing global drop surface");
+  assert(html.includes('id="devices"'), "desktop UI HTML missing devices section");
+  assert(html.includes('id="flow"'), "desktop UI HTML missing flow section");
+  assert(!html.includes('id="openFolder"'), "desktop UI should not render the old top open button");
   assert(!html.includes("dropzone"), "desktop UI should not render the old dropzone");
 
   const addShare = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares`, {
@@ -69,16 +72,29 @@ try {
   const share = shareJson.share as { id?: string } | undefined;
   assert(share?.id, "share id missing");
 
-  const sync = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares/${share.id}/sync`, { method: "POST" });
-  assert(sync.ok, "share sync failed");
-
   const files = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/files`, {
     headers: { authorization: `Bearer ${token}` },
   });
   assert(files.ok, "vault file list failed");
   const filesJson = await expectJson(files);
   const listed = filesJson.files as Array<{ path: string }> | undefined;
-  assert(listed?.some((file) => file.path === "Client Docs/brief.txt"), "shared file was not uploaded under prefix");
+  assert(listed?.some((file) => file.path === "Client Docs/brief.txt"), "shared file was not uploaded under prefix on add");
+
+  const folder = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares/${share.id}/folders`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Research Notes" }),
+  });
+  assert(folder.status === 201, `shared folder marker failed with ${folder.status}`);
+  const markerFiles = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/files`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const markerJson = await expectJson(markerFiles);
+  const markerListed = markerJson.files as Array<{ path: string }> | undefined;
+  assert(
+    markerListed?.some((file) => file.path === "Client Docs/Research Notes/.agent-vault-folder"),
+    "shared empty folder marker was not uploaded",
+  );
 
   const summary = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/summary`);
   assert(summary.ok, "summary failed");

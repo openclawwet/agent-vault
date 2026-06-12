@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { initConfig, loadConfig } from "./config.js";
 import { openNativeDesktopApp } from "./nativeApp.js";
-import { pullCommand, pushCommand, scanCommand, statusCommand, watchCommand } from "./syncCommands.js";
+import { watchAllSources } from "./autoSync.js";
+import { pullCommand, pushCommand, scanCommand, statusCommand } from "./syncCommands.js";
 import { startDesktopUi } from "./uiServer.js";
 
 function flags(args: string[]): Record<string, string> {
@@ -51,7 +52,7 @@ if (command === "init") {
   } else if (command === "pull") {
     console.log(JSON.stringify(await pullCommand(config), null, 2));
   } else if (command === "watch") {
-    await watchCommand(config);
+    await watchAllSources(config);
   } else if (command === "serve-ui") {
     const started = await startDesktopUi(config, {
       port: options.port ? Number.parseInt(options.port, 10) : undefined,

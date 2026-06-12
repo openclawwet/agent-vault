@@ -42,12 +42,33 @@ function normalizedRemotePrefix(config: MacSyncConfig): string {
   return segments.join("/");
 }
 
+function normalizedIgnoredRemotePrefixes(config: MacSyncConfig): string[] {
+  return (config.ignoreRemotePathPrefixes ?? [])
+    .map((raw) =>
+      raw
+        .replaceAll("\\", "/")
+        .split("/")
+        .map((segment) => segment.trim())
+        .filter(Boolean),
+    )
+    .filter((segments) => !segments.some((segment) => segment === "." || segment === ".."))
+    .map((segments) => segments.join("/"))
+    .filter(Boolean);
+}
+
+function isIgnoredRemotePath(config: MacSyncConfig, filePath: string): boolean {
+  return normalizedIgnoredRemotePrefixes(config).some((prefix) => filePath === prefix || filePath.startsWith(`${prefix}/`));
+}
+
 function remotePath(config: MacSyncConfig, filePath: string): string {
   const prefix = normalizedRemotePrefix(config);
   return prefix ? `${prefix}/${filePath}` : filePath;
 }
 
 function localPathFromRemote(config: MacSyncConfig, filePath: string): string | undefined {
+  if (isIgnoredRemotePath(config, filePath)) {
+    return undefined;
+  }
   const prefix = normalizedRemotePrefix(config);
   if (!prefix) {
     return filePath;

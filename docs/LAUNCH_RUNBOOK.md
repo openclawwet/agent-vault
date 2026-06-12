@@ -100,9 +100,9 @@ pnpm --filter @agent-vault/mac-sync exec agent-vault-sync watch
 pnpm --filter @agent-vault/mac-sync exec agent-vault-sync ui
 ```
 
-Conflicts are written under `~/AgentVault/.agent-vault/conflicts` instead of overwriting edits.
+Conflicts are written under `~/AgentVault/.agent-vault/conflicts` instead of overwriting edits. `watch` follows `~/AgentVault` and every enabled shared folder in `~/.agent-vault/shares.json`.
 
-The desktop UI runs locally on the device that starts it. The Onecurl installer places `Agent Vault.app` in `~/Applications`; `agent-vault-sync ui` opens that macOS app, which starts a private local UI bridge only while the app is open. Shared-folder registrations live under `~/.agent-vault/shares.json`, the Vault token stays out of the UI bundle, and each shared folder mirrors under its own Vault prefix so multiple folders do not collide. Use `agent-vault-sync ui --browser` only for debug.
+The desktop UI runs locally on the device that starts it. The Onecurl installer places `Agent Vault.app` in `~/Applications`; `agent-vault-sync ui` opens that macOS app, which starts a private local UI bridge only while the app is open. Shared-folder registrations live under `~/.agent-vault/shares.json`, the Vault token stays out of the UI bundle, and each shared folder mirrors under its own Vault prefix so multiple folders do not collide. Adding a share now triggers an initial sync, the open app auto-syncs periodically, and the always-on path is `agent-vault-sync watch`. Share prefixes are ignored by the main `~/AgentVault` sync to avoid duplicate pulls. Empty shared folders are represented by a hidden `.agent-vault-folder` marker. Use `agent-vault-sync ui --browser` only for debug.
 
 ## Phone PWA over Tailscale
 

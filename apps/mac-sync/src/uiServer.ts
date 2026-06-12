@@ -1,13 +1,16 @@
 import { execFile, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import type { VaultFileRecord } from "@agent-vault/core";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { ChangeEventRecord, DeviceRecord, VaultFileRecord } from "@agent-vault/core";
 import type { MacSyncConfig } from "./config.js";
+import { configWithShareIgnores, syncAllSources, summaryChanged } from "./autoSync.js";
 import { readActivity, recordActivity } from "./activityLog.js";
 import { scanLocal } from "./localState.js";
 import { addShare, loadShareConfig, removeShare, type ShareRecord } from "./shareConfig.js";
 import { shareStatus, syncShare } from "./shareSync.js";
-import { pullCommand, pushCommand, statusCommand } from "./syncCommands.js";
+import { statusCommand } from "./syncCommands.js";
 import { VaultClient } from "./vaultClient.js";
 
 export interface DesktopUiOptions {
@@ -125,9 +128,11 @@ function changedCount(actions: Awaited<ReturnType<typeof statusCommand>>["action
 async function summarizeShare(config: MacSyncConfig, share: ShareRecord) {
   try {
     const [files, status] = await Promise.all([scanLocal(share.localDir), shareStatus(config, share)]);
+    const localSize = files.reduce((sum, file) => sum + file.size, 0);
     return {
       ...share,
       localFileCount: files.length,
+      localSize,
       pendingActions: changedCount(status.actions),
       available: true,
     };
@@ -135,6 +140,7 @@ async function summarizeShare(config: MacSyncConfig, share: ShareRecord) {
     return {
       ...share,
       localFileCount: 0,
+      localSize: 0,
       pendingActions: 0,
       available: false,
       error: error instanceof Error ? error.message : "Share is unavailable.",
@@ -155,15 +161,58 @@ function folderTree(files: VaultFileRecord[]): Array<{ path: string; count: numb
   return [...folders.values()].sort((a, b) => a.path.localeCompare(b.path));
 }
 
+function belongsToPrefix(filePath: string, prefix: string): boolean {
+  return filePath === prefix || filePath.startsWith(`${prefix}/`);
+}
+
+function flowStats(changes: ChangeEventRecord[], files: VaultFileRecord[]) {
+  const now = Date.now();
+  const windows = [
+    { key: "hour", label: "1h", ms: 60 * 60 * 1000 },
+    { key: "day", label: "24h", ms: 24 * 60 * 60 * 1000 },
+    { key: "week", label: "7d", ms: 7 * 24 * 60 * 60 * 1000 },
+  ];
+  const fileSizeBySpacePath = new Map(files.map((file) => [`${file.space}/${file.path}`, file.size]));
+
+  return windows.map((window) => {
+    const scoped = changes.filter((change) => now - new Date(change.timestamp).getTime() <= window.ms);
+    return {
+      key: window.key,
+      label: window.label,
+      events: scoped.length,
+      bytes: scoped.reduce((sum, change) => sum + (fileSizeBySpacePath.get(`${change.space}/${change.path}`) ?? 0), 0),
+    };
+  });
+}
+
+async function connectedDevices(vault: VaultClient): Promise<{ devices: DeviceRecord[]; currentDeviceId: string; adminVisible: boolean }> {
+  const me = await vault.me();
+  try {
+    return {
+      devices: await vault.listDevices(),
+      currentDeviceId: me.device.id,
+      adminVisible: true,
+    };
+  } catch {
+    return {
+      devices: [me.device],
+      currentDeviceId: me.device.id,
+      adminVisible: false,
+    };
+  }
+}
+
 async function buildSummary(config: MacSyncConfig) {
   const vault = new VaultClient(config.serverUrl, config.token);
   const shareConfig = await loadShareConfig();
-  const [spaces, mainStatus, activity] = await Promise.all([
+  const mainConfig = configWithShareIgnores(config, shareConfig.shares);
+  const [spaces, mainStatus, activity, deviceSummary] = await Promise.all([
     vault.listSpaces(),
-    statusCommand(config).catch((error: unknown) => ({ actions: [], error: error instanceof Error ? error.message : "Status failed." })),
+    statusCommand(mainConfig).catch((error: unknown) => ({ actions: [], error: error instanceof Error ? error.message : "Status failed." })),
     readActivity(),
+    connectedDevices(vault).catch(() => ({ devices: [], currentDeviceId: "", adminVisible: false })),
   ]);
-  const shares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share)));
+  const localShares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share)));
   const remoteSpaces = await Promise.all(
     spaces.map(async (space) => {
       try {
@@ -191,6 +240,23 @@ async function buildSummary(config: MacSyncConfig) {
       }
     }),
   );
+  const remoteFiles = remoteSpaces.flatMap((space) => space.files);
+  const recentChanges = remoteSpaces
+    .flatMap((space) => space.recentChanges.map((change) => ({ ...change, space: space.name })))
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  const shares = localShares.map((share) => {
+    const remoteSpace = remoteSpaces.find((space) => space.name === share.space);
+    const remoteShareFiles = remoteSpace?.files.filter((file) => belongsToPrefix(file.path, share.remotePathPrefix)) ?? [];
+    const lastRemoteChange = recentChanges.find(
+      (change) => change.space === share.space && belongsToPrefix(change.path, share.remotePathPrefix),
+    );
+    return {
+      ...share,
+      remoteFileCount: remoteShareFiles.length,
+      remoteSize: remoteShareFiles.reduce((sum, file) => sum + file.size, 0),
+      lastRemoteChange: lastRemoteChange?.timestamp ?? null,
+    };
+  });
 
   return {
     serverUrl: config.serverUrl,
@@ -200,28 +266,85 @@ async function buildSummary(config: MacSyncConfig) {
     mainStatusError: "error" in mainStatus ? mainStatus.error : null,
     shares,
     remoteSpaces,
+    devices: deviceSummary.devices,
+    currentDeviceId: deviceSummary.currentDeviceId,
+    devicesAdminVisible: deviceSummary.adminVisible,
+    flowStats: flowStats(recentChanges, remoteFiles),
+    recentChanges,
     activity,
   };
 }
 
 async function syncAll(config: MacSyncConfig) {
-  const pushed = await pushCommand(config);
-  const pulled = await pullCommand(config);
-  const shareConfig = await loadShareConfig();
-  const shares = [];
-  for (const share of shareConfig.shares.filter((item) => item.enabled)) {
-    shares.push(await syncShare(config, share));
-  }
+  const result = await syncAllSources(config);
   await recordActivity("sync", "Synced Agent Vault desktop sources", {
-    main: {
-      pushed: pushed.pushed,
-      pulled: pulled.pulled,
-      deleted: pushed.deleted + pulled.deleted,
-      conflicts: pushed.conflicts + pulled.conflicts,
-    },
-    shares: shares.map((share) => ({ label: share.label, summary: share.summary })),
+    main: result.main,
+    total: result.total,
+    shares: result.shares.map((share) => ({ label: share.label, summary: share.summary })),
   });
-  return { main: { pushed, pulled }, shares };
+  return result;
+}
+
+function safeRelativeFolder(value: string): string {
+  const cleaned = value.replaceAll("\\", "/").trim();
+  const parts = cleaned
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === ".." || part.includes("\0"))) {
+    throw new UiError(400, "invalid_folder_name", "Folder name is invalid.");
+  }
+  return parts.join("/");
+}
+
+async function createFolderMarker(config: MacSyncConfig, share: ShareRecord, folderName: string) {
+  const folder = safeRelativeFolder(folderName);
+  const targetDir = path.join(share.localDir, ...folder.split("/"));
+  const markerPath = path.join(targetDir, ".agent-vault-folder");
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(markerPath, `Agent Vault folder marker\n${new Date().toISOString()}\n`, { flag: "wx" }).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  });
+  const synced = await syncShare(config, share);
+  await recordActivity("sync", `Created shared folder ${share.label}/${folder}`, {
+    share: share.label,
+    folder,
+    summary: synced.summary,
+  });
+  return { folder, marker: ".agent-vault-folder", synced };
+}
+
+function startUiAutoSync(config: MacSyncConfig): () => void {
+  let running = false;
+  let closed = false;
+  const intervalMs = Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_MS ?? "20000", 10);
+
+  async function run(reason: string): Promise<void> {
+    if (running || closed) return;
+    running = true;
+    try {
+      const result = await syncAllSources(config);
+      if (summaryChanged(result.total)) {
+        await recordActivity("sync", `Auto-synced Agent Vault sources (${reason})`, {
+          total: result.total,
+          shares: result.shares.map((share) => ({ label: share.label, summary: share.summary })),
+        });
+      }
+    } catch (error: unknown) {
+      await recordActivity("error", "Auto-sync failed", {
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      running = false;
+    }
+  }
+
+  const timer = setInterval(() => void run("ui"), Math.max(5000, intervalMs));
+  void run("ui startup");
+  return () => {
+    closed = true;
+    clearInterval(timer);
+  };
 }
 
 async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -272,12 +395,14 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       space: typeof body.space === "string" ? body.space : config.space,
       remotePathPrefix: typeof body.remotePathPrefix === "string" ? body.remotePathPrefix : undefined,
     });
+    const initialSync = await syncShare(config, share);
     await recordActivity("share_added", `Added shared folder ${share.label}`, {
       localDir: share.localDir,
       space: share.space,
       remotePathPrefix: share.remotePathPrefix,
+      initialSync: initialSync.summary,
     });
-    sendJson(res, 201, { share });
+    sendJson(res, 201, { share, initialSync });
     return;
   }
 
@@ -303,6 +428,21 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       summary: result.summary,
     });
     sendJson(res, 200, result);
+    return;
+  }
+
+  if (method === "POST" && route.length === 4 && route[0] === "api" && route[1] === "shares" && route[3] === "folders") {
+    const shareConfig = await loadShareConfig();
+    const share = shareConfig.shares.find((item) => item.id === route[2]);
+    if (!share) {
+      throw new UiError(404, "share_not_found", "Shared folder was not found.");
+    }
+    const body = await readJson(req);
+    const folderName = String(body.name ?? body.path ?? "").trim();
+    if (!folderName) {
+      throw new UiError(400, "missing_folder_name", "Folder name is required.");
+    }
+    sendJson(res, 201, await createFolderMarker(config, share, folderName));
     return;
   }
 
@@ -345,6 +485,7 @@ function openBrowser(url: string): void {
 export async function startDesktopUi(config: MacSyncConfig, options: DesktopUiOptions = {}): Promise<StartedDesktopUi> {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 4786;
+  let stopAutoSync: () => void = () => {};
   const server = createServer((req, res) => {
     void handleRequest(config, req, res).catch((error) => sendError(res, error));
   });
@@ -360,6 +501,7 @@ export async function startDesktopUi(config: MacSyncConfig, options: DesktopUiOp
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://${host}:${actualPort}/desktop`;
+  stopAutoSync = startUiAutoSync(config);
   if (options.open !== false) {
     openBrowser(url);
   }
@@ -369,6 +511,7 @@ export async function startDesktopUi(config: MacSyncConfig, options: DesktopUiOp
     port: actualPort,
     server,
     close() {
+      stopAutoSync();
       return new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
@@ -582,24 +725,6 @@ function renderHtml(): string {
         width: 7px;
         height: 7px;
       }
-      .refresh-icon::before,
-      .refresh-icon::after {
-        content: "";
-        position: absolute;
-        left: 1px;
-        right: 1px;
-        height: 1.5px;
-        border-radius: 999px;
-        background: currentColor;
-      }
-      .refresh-icon::before {
-        top: 5px;
-        transform: rotate(18deg);
-      }
-      .refresh-icon::after {
-        bottom: 5px;
-        transform: rotate(-18deg);
-      }
       .workspace {
         position: relative;
         z-index: 2;
@@ -695,7 +820,7 @@ function renderHtml(): string {
       .source-title {
         max-width: 210px;
         color: rgba(238, 231, 219, 0.9);
-        font-size: 20px;
+        font-size: 17px;
         line-height: 1.13;
         font-weight: 580;
         overflow-wrap: anywhere;
@@ -709,7 +834,7 @@ function renderHtml(): string {
         overflow-wrap: anywhere;
       }
       .source-line {
-        margin-top: 14px;
+        margin-top: 12px;
         display: flex;
         gap: 10px;
         flex-wrap: wrap;
@@ -784,8 +909,8 @@ function renderHtml(): string {
         flex: 0 0 330px;
         min-height: 0;
         display: grid;
-        grid-template-rows: minmax(0, 0.96fr) minmax(0, 0.86fr);
-        gap: 34px;
+        grid-template-rows: auto auto minmax(0, 0.82fr) minmax(0, 0.92fr);
+        gap: 24px;
         padding: 42px 0 25px;
       }
       .side-section {
@@ -807,11 +932,15 @@ function renderHtml(): string {
         padding-right: 5px;
       }
       .space,
-      .activity {
+      .activity,
+      .device,
+      .stat-row {
         padding: 0 0 18px;
       }
       .space + .space,
-      .activity + .activity {
+      .activity + .activity,
+      .device + .device,
+      .stat-row + .stat-row {
         border-top: 1px solid var(--line);
         padding-top: 18px;
       }
@@ -826,7 +955,9 @@ function renderHtml(): string {
         font-size: 11px;
       }
       .folder,
-      .change {
+      .change,
+      .device,
+      .stat-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 10px;
@@ -854,6 +985,23 @@ function renderHtml(): string {
         margin-top: 5px;
         color: var(--faint);
         font-size: 10.5px;
+      }
+      .device-name,
+      .stat-label {
+        color: rgba(238, 231, 219, 0.68);
+        font-size: 12px;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+      .device-meta,
+      .stat-meta {
+        color: var(--faint);
+        font-size: 10.5px;
+        text-align: right;
+        white-space: nowrap;
+      }
+      .change-op {
+        color: rgba(238, 231, 219, 0.58);
       }
       .empty-note {
         color: var(--faint);
@@ -1046,6 +1194,9 @@ function renderHtml(): string {
           align-items: flex-start;
           flex-direction: column;
         }
+        .schema-viewport {
+          min-height: 520px;
+        }
       }
     </style>
   </head>
@@ -1059,14 +1210,13 @@ function renderHtml(): string {
           <span id="connection">loading</span>
         </div>
         <div class="top-actions">
-          <button class="text-button" id="openFolder">open</button>
+          <button class="text-button" id="refresh">refresh</button>
           <button class="text-button primary" id="syncAll">sync</button>
         </div>
       </header>
       <nav class="nav-float" aria-label="Agent Vault views">
         <button class="icon-button active" data-view="vault" title="Vault" aria-label="Vault"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
         <button class="icon-button" data-view="schema" title="Schema" aria-label="Schema"><span class="mini-icon schema-icon" aria-hidden="true"></span></button>
-        <button class="icon-button" id="refresh" title="Refresh" aria-label="Refresh"><span class="mini-icon refresh-icon" aria-hidden="true"></span></button>
       </nav>
       <section class="workspace" aria-live="polite">
         <section class="view vault-view active" id="view-vault">
@@ -1084,8 +1234,21 @@ function renderHtml(): string {
           <aside class="side">
             <section class="side-section">
               <div class="side-head">
-                <h2 class="side-title">vault</h2>
+                <h2 class="side-title">devices</h2>
+                <span class="status-pill" id="deviceScope">local</span>
+              </div>
+              <div class="side-body" id="devices"></div>
+            </section>
+            <section class="side-section">
+              <div class="side-head">
+                <h2 class="side-title">flow</h2>
                 <span class="status-pill" id="pending">0 pending</span>
+              </div>
+              <div class="side-body" id="flow"></div>
+            </section>
+            <section class="side-section">
+              <div class="side-head">
+                <h2 class="side-title">structure</h2>
               </div>
               <div class="side-body" id="structure"></div>
             </section>
@@ -1123,7 +1286,7 @@ function renderHtml(): string {
       const state = {
         summary: null,
         view: "vault",
-        schema: { scale: 1, x: 80, y: 48, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 },
+        schema: { scale: 1, x: 80, y: 48, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0, hasUserMoved: false },
         dragDepth: 0
       };
       const $ = (id) => document.getElementById(id);
@@ -1158,6 +1321,9 @@ function renderHtml(): string {
       const fmtTime = (value) => new Date(value).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
       const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+      const schemaDefaults = () => window.innerWidth < 760
+        ? { scale: 0.72, x: 8, y: 46 }
+        : { scale: 1, x: 80, y: 48 };
 
       async function refresh() {
         state.summary = await api("/api/summary");
@@ -1174,54 +1340,71 @@ function renderHtml(): string {
 
       function render() {
         const summary = state.summary;
-        let host = summary.serverUrl;
-        try { host = new URL(summary.serverUrl).host; } catch {}
-        $("connection").textContent = host + " / " + summary.defaultSpace;
-        $("pending").textContent = summary.mainPendingActions + " pending";
-        $("shareCount").textContent = summary.shares.length + (summary.shares.length === 1 ? " source" : " sources");
+        const totalPending = summary.mainPendingActions + summary.shares.reduce((sum, share) => sum + share.pendingActions, 0);
+        $("connection").textContent = summary.defaultSpace + " / autosync";
+        $("pending").textContent = totalPending + " pending";
+        $("deviceScope").textContent = summary.devicesAdminVisible ? "all devices" : "this device";
+        $("shareCount").textContent = summary.shares.length + (summary.shares.length === 1 ? " source" : " sources") + " / autosync on";
         $("shares").innerHTML = summary.shares.length ? summary.shares.map((share) =>
           '<article class="source">' +
             '<span class="folder-mark" aria-hidden="true"></span>' +
             '<div class="source-title">' + esc(share.label) + '</div>' +
             '<div class="source-path" title="' + esc(share.localDir) + '">' + esc(shortPath(share.localDir)) + '</div>' +
             '<div class="source-line">' +
-              '<span>' + (share.available ? fileLabel(share.localFileCount) : "offline") + '</span>' +
+              '<span>' + (share.available ? fileLabel(share.localFileCount) + ' / ' + fmtSize(share.localSize) : "offline") + '</span>' +
               '<span>/</span>' +
-              '<span>' + share.pendingActions + ' pending</span>' +
+              '<span>' + share.remoteFileCount + ' remote / ' + fmtSize(share.remoteSize) + '</span>' +
+              '<span>/</span>' +
+              '<span>' + (share.pendingActions ? share.pendingActions + ' pending' : 'synced') + '</span>' +
               '<span>/</span>' +
               '<button class="source-action" data-open="' + esc(share.localDir) + '">open</button>' +
+              '<button class="source-action" data-folder="' + esc(share.id) + '">folder</button>' +
               '<button class="source-action" data-sync="' + esc(share.id) + '">sync</button>' +
               '<button class="source-action danger" data-remove="' + esc(share.id) + '">remove</button>' +
             '</div>' +
           '</article>'
         ).join("") : '<div class="source empty">Press + to add a folder. Drop files or folders anywhere in this window for quick uploads.</div>';
+        $("devices").innerHTML = summary.devices.length ? summary.devices.slice(0, 5).map((device) => {
+          const scopeCount = (device.scopes || []).length;
+          const isCurrent = device.id === summary.currentDeviceId;
+          return '<div class="device">' +
+            '<div class="device-name">' + esc(device.name) + (isCurrent ? ' / current' : '') + '</div>' +
+            '<div class="device-meta">' + scopeCount + ' spaces</div>' +
+          '</div>';
+        }).join("") : '<div class="empty-note">No device data.</div>';
+        $("flow").innerHTML = summary.flowStats.map((stat) =>
+          '<div class="stat-row">' +
+            '<div class="stat-label">' + esc(stat.label) + '</div>' +
+            '<div class="stat-meta">' + stat.events + ' events / ' + fmtSize(stat.bytes) + '</div>' +
+          '</div>'
+        ).join("");
         const visibleSpaces = summary.remoteSpaces.filter((space) => space.fileCount > 0 || space.name === summary.defaultSpace).slice(0, 4);
         $("structure").innerHTML = visibleSpaces.length ? visibleSpaces.map((space) => {
-          const folders = (space.folders.length ? space.folders : [{ path: "/", count: 0, size: 0 }]).slice(0, 4).map((folder) =>
+          const folders = (space.folders.length ? space.folders : [{ path: "/", count: 0, size: 0 }]).slice(0, 5).map((folder) =>
             '<div class="folder">' +
               '<span class="mono">' + esc(folder.path) + '</span>' +
               '<span class="metric">' + folder.count + ' / ' + fmtSize(folder.size) + '</span>' +
-            '</div>'
-          ).join("");
-          const changes = space.recentChanges.slice(0, 2).map((change) =>
-            '<div class="change">' +
-              '<span class="mono">' + esc(change.operation) + ' ' + esc(change.path) + '</span>' +
-              '<span class="metric">' + esc(change.device) + '</span>' +
             '</div>'
           ).join("");
           return '<div class="space">' +
             '<div class="space-title">' + esc(space.name) + '</div>' +
             '<div class="subtle">' + fileLabel(space.fileCount) + ' / ' + fmtSize(space.size) + '</div>' +
             folders +
-            changes +
           '</div>';
         }).join("") : '<div class="empty-note">No vault files yet.</div>';
-        $("activity").innerHTML = summary.activity.length ? summary.activity.slice(0, 12).map((entry) =>
+        const remoteLog = summary.recentChanges.slice(0, 12).map((change) =>
+          '<div class="activity">' +
+            '<div class="activity-message"><span class="change-op">' + esc(change.operation) + '</span> ' + esc(change.path) + '</div>' +
+            '<div class="activity-meta">' + esc(change.space) + ' / ' + esc(change.device) + ' / ' + fmtTime(change.timestamp) + '</div>' +
+          '</div>'
+        );
+        const localLog = summary.activity.slice(0, Math.max(0, 12 - remoteLog.length)).map((entry) =>
           '<div class="activity">' +
             '<div class="activity-message">' + esc(entry.message) + '</div>' +
             '<div class="activity-meta">' + esc(entry.kind) + ' / ' + fmtTime(entry.timestamp) + '</div>' +
           '</div>'
-        ).join("") : '<div class="empty-note">No activity yet.</div>';
+        );
+        $("activity").innerHTML = remoteLog.concat(localLog).join("") || '<div class="empty-note">No activity yet.</div>';
         renderSchema();
       }
 
@@ -1243,7 +1426,7 @@ function renderHtml(): string {
         nodeHtml.push(schemaNode("node-device", "device", "MacBook", summary.syncFolder, 76, 230));
         nodeHtml.push(schemaNode("node-space", "vault space", summary.defaultSpace, defaultSpace ? fileLabel(defaultSpace.fileCount) + " / " + fmtSize(defaultSpace.size) : "0 files", 414, 230));
         nodeHtml.push(schemaNode("node-drops", "quick drop", "Desktop Drops", "window-wide drop target", 718, 92));
-        nodeHtml.push(schemaNode("node-log", "audit", "Activity Log", summary.activity.length + " entries", 718, 374));
+        nodeHtml.push(schemaNode("node-log", "audit", "Activity Log", summary.recentChanges.length + " remote events", 718, 374));
         lines.push('<path class="schema-line" d="M264 273 C330 273 342 273 414 273" />');
         lines.push('<path class="schema-line" d="M602 252 C650 202 674 150 718 135" />');
         lines.push('<path class="schema-line" d="M602 294 C662 324 672 382 718 418" />');
@@ -1258,6 +1441,9 @@ function renderHtml(): string {
         });
         $("schemaLines").innerHTML = lines.join("");
         $("schemaNodes").innerHTML = nodeHtml.join("");
+        if (!state.schema.hasUserMoved) {
+          Object.assign(state.schema, schemaDefaults());
+        }
         updateSchemaTransform();
       }
 
@@ -1325,7 +1511,6 @@ function renderHtml(): string {
         toast("Sync complete");
       });
       $("refresh").addEventListener("click", refresh);
-      $("openFolder").addEventListener("click", () => api("/api/open-main-folder", { method: "POST" }));
       $("pathForm").addEventListener("submit", async (event) => {
         event.preventDefault();
         const value = $("pathInput").value.trim();
@@ -1346,9 +1531,23 @@ function renderHtml(): string {
         const removeId = target?.dataset?.remove;
         const syncId = target?.dataset?.sync;
         const openFolder = target?.dataset?.open;
+        const folderId = target?.dataset?.folder;
         if (removeId) {
           await api("/api/shares/" + encodeURIComponent(removeId), { method: "DELETE" });
           await refresh();
+        }
+        if (folderId) {
+          const name = window.prompt("Folder name");
+          if (name?.trim()) {
+            toast("Creating folder");
+            await api("/api/shares/" + encodeURIComponent(folderId) + "/folders", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ name })
+            });
+            await refresh();
+            toast("Folder created");
+          }
         }
         if (syncId) {
           toast("Folder sync running");
@@ -1380,19 +1579,22 @@ function renderHtml(): string {
       document.addEventListener("drop", handleDrop);
 
       $("zoomIn").addEventListener("click", () => {
+        state.schema.hasUserMoved = true;
         state.schema.scale = clamp(state.schema.scale + 0.12, 0.45, 1.8);
         updateSchemaTransform();
       });
       $("zoomOut").addEventListener("click", () => {
+        state.schema.hasUserMoved = true;
         state.schema.scale = clamp(state.schema.scale - 0.12, 0.45, 1.8);
         updateSchemaTransform();
       });
       $("zoomReset").addEventListener("click", () => {
-        state.schema = { ...state.schema, scale: 1, x: 80, y: 48 };
+        state.schema = { ...state.schema, ...schemaDefaults(), hasUserMoved: false };
         updateSchemaTransform();
       });
       $("schemaViewport").addEventListener("wheel", (event) => {
         event.preventDefault();
+        state.schema.hasUserMoved = true;
         const previous = state.schema.scale;
         const next = clamp(previous + (event.deltaY > 0 ? -0.08 : 0.08), 0.45, 1.8);
         const rect = $("schemaViewport").getBoundingClientRect();
@@ -1404,6 +1606,7 @@ function renderHtml(): string {
         updateSchemaTransform();
       }, { passive: false });
       $("schemaViewport").addEventListener("pointerdown", (event) => {
+        state.schema.hasUserMoved = true;
         state.schema.dragging = true;
         state.schema.startX = event.clientX;
         state.schema.startY = event.clientY;
