@@ -14,7 +14,9 @@
   },
   "dependencies": {
     "@agent-vault/core": "workspace:*",
-    "@agent-vault/server": "workspace:*",
     "@agent-vault/sync": "workspace:*"
+  },
+  "devDependencies": {
+    "@agent-vault/server": "workspace:*"
   }
 }

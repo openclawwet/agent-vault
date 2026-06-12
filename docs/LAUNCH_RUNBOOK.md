@@ -78,7 +78,7 @@ One-command install from the MacBook while it is connected to Tailscale:
 curl -fsSL https://mac-mini-von-nils.tail8ca788.ts.net:8476/install/macbook.sh | bash
 ```
 
-The installer copies the client from the Mac Mini over SSH, installs pnpm dependencies, initializes `~/AgentVault`, and tries to fetch the MacBook device token from the Mac Mini without printing it. If SSH cannot read the token, it prompts for the token without echoing input.
+The installer downloads the packaged client from the private Vault URL, initializes `~/AgentVault`, and tries to fetch the MacBook device token from the private live token asset without printing it. It does not require SSH to the Mac Mini. If the private token asset is missing, it prompts for the MacBook device token without echoing input.
 
 Initialize the sync folder on the MacBook:
 

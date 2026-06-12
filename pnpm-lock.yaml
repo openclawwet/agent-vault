@@ -20,12 +20,13 @@ importers:
       '@agent-vault/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@agent-vault/server':
-        specifier: workspace:*
-        version: link:../server
       '@agent-vault/sync':
         specifier: workspace:*
         version: link:../../packages/sync
+    devDependencies:
+      '@agent-vault/server':
+        specifier: workspace:*
+        version: link:../server
 
   apps/server:
     dependencies:

@@ -70,7 +70,7 @@ From the MacBook, install the client over the private Tailnet:
 curl -fsSL https://mac-mini-von-nils.tail8ca788.ts.net:8476/install/macbook.sh | bash
 ```
 
-That creates `~/AgentVault`, copies the client from the Mac Mini over SSH, and initializes sync against the live Agent Vault server.
+That creates `~/AgentVault`, downloads the packaged client from the private Vault URL, and initializes sync against the live Agent Vault server. It does not require SSH to the Mac Mini. If the private live token asset is missing, it prompts for the MacBook device token without echoing input.
 
 ```bash
 pnpm --filter @agent-vault/mac-sync build

@@ -4,3 +4,5 @@ dist/
 .env
 .agent-vault/
 *.log
+apps/web/public/install/*.tar.gz
+apps/web/public/install/*.token
