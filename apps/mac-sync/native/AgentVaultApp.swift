@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = false
+        webView.setValue(false, forKey: "drawsBackground")
         webView.loadHTMLString(loadingHtml("Starting Agent Vault"), baseURL: nil)
 
         let window = NSWindow(
@@ -53,8 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer: false
         )
         window.title = "Agent Vault"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = false
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = NSColor(red: 0.075, green: 0.078, blue: 0.09, alpha: 1.0)
         window.minSize = NSSize(width: 920, height: 620)
         window.contentView = webView
         window.delegate = self
@@ -166,11 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
           <head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <style>
-              :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: #101312; color: #edf4ef; }
-              body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101312; }
-              main { width: min(420px, calc(100vw - 56px)); text-align: center; padding: 32px; border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.06); }
-              h1 { margin: 0 0 10px; font-size: 24px; letter-spacing: 0; }
-              p { margin: 0; color: rgba(237,244,239,.68); line-height: 1.45; overflow-wrap: anywhere; }
+              :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: #17181d; color: #f3f4f7; }
+              body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #15161a, #1a1b20 58%, #101114); }
+              main { width: min(420px, calc(100vw - 72px)); text-align: left; padding: 0; background: transparent; }
+              h1 { margin: 0 0 14px; font-size: 30px; line-height: 1.05; letter-spacing: 0; }
+              p { margin: 0; color: rgba(243,244,247,.62); line-height: 1.45; overflow-wrap: anywhere; }
             </style>
           </head>
           <body><main><h1>Agent Vault</h1><p>\(escaped)</p></main></body>

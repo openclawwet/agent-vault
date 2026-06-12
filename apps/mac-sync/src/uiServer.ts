@@ -383,269 +383,547 @@ function renderHtml(): string {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent Vault Desktop</title>
+    <link rel="icon" href="data:," />
     <style>
       :root {
         color-scheme: dark;
         font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-        background: #0d100f;
-        color: #edf4ef;
-        --bg: #0d100f;
-        --panel: rgba(19, 24, 22, 0.74);
-        --panel-soft: rgba(255, 255, 255, 0.055);
-        --line: rgba(255, 255, 255, 0.105);
-        --line-strong: rgba(255, 255, 255, 0.18);
-        --muted: rgba(237, 244, 239, 0.62);
-        --faint: rgba(237, 244, 239, 0.42);
-        --accent: #a8eec7;
-        --accent-ink: #082019;
+        background: #131417;
+        color: #f4f2ee;
+        --bg: #131417;
+        --rail: rgba(35, 38, 45, 0.9);
+        --tile: rgba(37, 39, 45, 0.9);
+        --tile-deep: rgba(28, 30, 35, 0.94);
+        --line: rgba(255, 255, 255, 0.07);
+        --line-strong: rgba(255, 255, 255, 0.14);
+        --muted: rgba(244, 242, 238, 0.58);
+        --faint: rgba(244, 242, 238, 0.34);
+        --accent: #7fd7df;
+        --accent-soft: rgba(127, 215, 223, 0.12);
+        --warm: #f2b98d;
+        --warn: #f0c886;
+        --danger: #ff9f90;
+        --shadow: 0 0 0 1px rgba(255, 255, 255, 0.025),
+          -9px 9px 9px -0.5px rgba(0, 0, 0, 0.04),
+          -18px 18px 18px -1.5px rgba(0, 0, 0, 0.08),
+          -37px 37px 37px -3px rgba(0, 0, 0, 0.16),
+          -75px 75px 75px -6px rgba(0, 0, 0, 0.24),
+          -150px 150px 150px -12px rgba(0, 0, 0, 0.48);
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100svh;
-        background: linear-gradient(145deg, #0d100f 0%, #121815 48%, #181611 100%);
+        background:
+          radial-gradient(circle at 72% 14%, rgba(255, 255, 255, 0.035), transparent 26%),
+          linear-gradient(135deg, #151518 0%, #191a1f 56%, #101114 100%);
         overflow: hidden;
+        -webkit-font-smoothing: antialiased;
       }
-      button, input, select { font: inherit; }
+      button, input { font: inherit; }
+      button { user-select: none; }
       .shell {
         min-height: 100svh;
-        padding: 0;
         display: grid;
-        grid-template-rows: 54px 1fr;
-        gap: 0;
+        grid-template-columns: 74px minmax(0, 1fr);
+      }
+      .rail {
+        min-height: 100svh;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        justify-items: center;
+        padding: 27px 0 22px;
+        background: linear-gradient(180deg, rgba(42, 45, 53, 0.92), rgba(31, 34, 41, 0.98));
+        border-right: 1px solid rgba(255, 255, 255, 0.055);
+      }
+      .mark {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.82);
+        box-shadow: inset 0 0 0 4px rgba(36, 39, 46, 0.96), 0 16px 32px rgba(0, 0, 0, 0.28);
+      }
+      .rail-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        align-items: center;
+      }
+      .rail-button {
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 11px;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        color: rgba(244, 242, 238, 0.62);
+        background: transparent;
+        transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+      }
+      .rail-button:hover {
+        color: rgba(244, 242, 238, 0.92);
+        background: rgba(255, 255, 255, 0.06);
+        transform: translateY(-1px);
+      }
+      .rail-button.active {
+        color: #15161a;
+        background: rgba(255, 255, 255, 0.92);
+      }
+      .mini-icon {
+        position: relative;
+        width: 17px;
+        height: 17px;
+        display: block;
+      }
+      .vault-icon {
+        border-radius: 5px;
+        border: 2px solid currentColor;
+      }
+      .vault-icon::after {
+        content: "";
+        position: absolute;
+        left: 3px;
+        right: 3px;
+        bottom: 3px;
+        height: 2px;
+        background: currentColor;
+        opacity: 0.72;
+      }
+      .refresh-icon::before,
+      .refresh-icon::after {
+        content: "";
+        position: absolute;
+        left: 1px;
+        right: 1px;
+        height: 2px;
+        border-radius: 999px;
+        background: currentColor;
+      }
+      .refresh-icon::before {
+        top: 5px;
+        transform: rotate(18deg);
+      }
+      .refresh-icon::after {
+        bottom: 5px;
+        transform: rotate(-18deg);
+      }
+      .rail-plus {
+        position: fixed;
+        left: 18px;
+        bottom: 22px;
+        width: 38px;
+        height: 38px;
+        border-radius: 11px;
+        color: #15161a;
+        background: rgba(255, 255, 255, 0.92);
+        font-size: 28px;
+        line-height: 1;
+      }
+      .workspace {
+        min-width: 0;
+        min-height: 100svh;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        padding: 48px 54px 38px 72px;
       }
       .topbar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 0 18px 0 16px;
-        border-bottom: 1px solid var(--line);
-        background: rgba(11, 14, 13, 0.74);
-        backdrop-filter: blur(24px);
-        -webkit-backdrop-filter: blur(24px);
-      }
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
         min-width: 0;
-      }
-      .traffic {
         display: flex;
-        gap: 7px;
-        padding-right: 5px;
-        width: 58px;
-        flex: 0 0 58px;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 32px;
+        padding-bottom: 36px;
       }
-      .traffic span {
-        display: none;
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.22);
-      }
+      .brand { min-width: 0; }
       h1 {
         margin: 0;
-        font-size: 15px;
-        line-height: 1;
+        font-size: 31px;
+        line-height: 1.04;
+        font-weight: 760;
         letter-spacing: 0;
-        white-space: nowrap;
       }
       .device-line {
-        min-width: 0;
+        margin-top: 17px;
+        max-width: min(720px, 54vw);
         color: var(--muted);
         font-size: 12px;
+        font-weight: 560;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .subtle { color: var(--muted); }
-      .actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
-      .button {
-        border: 1px solid var(--line);
-        color: #edf4ef;
-        background: rgba(255, 255, 255, 0.07);
-        min-height: 34px;
-        padding: 0 12px;
-        border-radius: 8px;
-        cursor: pointer;
-        transition: background 160ms ease, border-color 160ms ease, transform 160ms ease, color 160ms ease;
-      }
-      .button:hover { background: rgba(255, 255, 255, 0.12); border-color: var(--line-strong); transform: translateY(-1px); }
-      .button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
-      .button.danger { color: #ffd9cf; }
-      .grid {
-        display: grid;
-        grid-template-columns: minmax(290px, 340px) minmax(420px, 1fr) minmax(300px, 360px);
-        gap: 1px;
-        min-height: 0;
-        background: var(--line);
-      }
-      .panel, .share, .dropzone {
-        background: var(--panel);
-        backdrop-filter: blur(22px);
-        -webkit-backdrop-filter: blur(22px);
-      }
-      .panel {
-        min-height: 0;
-        overflow: hidden;
+      .actions {
         display: flex;
-        flex-direction: column;
-        border: 0;
-        border-radius: 0;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
       }
-      .panel-head {
-        min-height: 52px;
-        padding: 12px 16px;
+      .button {
+        border: 0;
+        min-height: 36px;
+        padding: 0 13px;
+        border-radius: 7px;
+        color: rgba(244, 242, 238, 0.82);
+        background: rgba(255, 255, 255, 0.055);
+        cursor: pointer;
+        transition: background 160ms ease, transform 160ms ease, color 160ms ease;
+      }
+      .button:hover {
+        color: rgba(244, 242, 238, 0.96);
+        background: rgba(255, 255, 255, 0.105);
+        transform: translateY(-1px);
+      }
+      .button.primary {
+        color: #15161a;
+        background: rgba(244, 242, 238, 0.9);
+      }
+      .button.danger {
+        color: rgba(244, 242, 238, 0.42);
+        background: transparent;
+      }
+      .button.danger:hover { color: var(--danger); }
+      .content {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 312px;
+        gap: 46px;
+      }
+      .stage {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        gap: 30px;
+        overflow: hidden;
+      }
+      .stage-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 18px;
+      }
+      .stage-head h2,
+      .context-block h2 {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1;
+        font-weight: 760;
+        letter-spacing: 0;
+      }
+      .count-line {
+        color: var(--faint);
+        font-size: 12px;
+        font-weight: 620;
+      }
+      .dropzone {
+        min-height: 174px;
+        display: grid;
+        place-items: center;
+        padding: 28px;
+        text-align: center;
+        color: rgba(244, 242, 238, 0.68);
+        background: rgba(255, 255, 255, 0.018);
+        border: 1px dashed rgba(255, 255, 255, 0.18);
+        border-radius: 5px;
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+      }
+      .dropzone:hover {
+        transform: translateY(-2px);
+        border-color: rgba(244, 242, 238, 0.28);
+      }
+      .dropzone.active {
+        background: rgba(127, 215, 223, 0.08);
+        border-color: rgba(127, 215, 223, 0.68);
+      }
+      .drop-label {
+        font-size: 20px;
+        line-height: 1.18;
+        font-weight: 730;
+      }
+      .drop-note {
+        margin-top: 9px;
+        color: var(--faint);
+        font-size: 12px;
+      }
+      .share-cloud {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+        gap: 28px;
+        align-content: start;
+        padding: 5px 34px 60px 0;
+      }
+      .share-cloud .share:nth-child(3n + 2) { margin-top: 26px; }
+      .share-cloud .share:nth-child(4n + 3) { margin-top: 10px; }
+      .share {
+        position: relative;
+        min-height: 218px;
+        display: grid;
+        align-content: space-between;
+        gap: 18px;
+        padding: 28px 26px 22px;
+        overflow: hidden;
+        background: linear-gradient(152deg, rgba(43, 45, 52, 0.92), rgba(30, 32, 37, 0.94));
+        border: 1px solid rgba(255, 255, 255, 0.038);
+        border-radius: 4px;
+        box-shadow: var(--shadow);
+        animation: tileIn 300ms ease both;
+        transition: transform 170ms ease, background 170ms ease, border-color 170ms ease;
+      }
+      .share:hover {
+        transform: translateY(-3px);
+        background: linear-gradient(152deg, rgba(49, 51, 58, 0.95), rgba(33, 35, 40, 0.96));
+        border-color: rgba(255, 255, 255, 0.09);
+      }
+      .share::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 26px;
+        width: 3px;
+        height: 54px;
+        background: var(--accent);
+        opacity: 0.86;
+      }
+      .share::after {
+        content: "";
+        position: absolute;
+        right: 22px;
+        top: 25px;
+        width: 68px;
+        height: 51px;
+        border-radius: 7px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0 7px, rgba(255, 255, 255, 0) 7px),
+          linear-gradient(132deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.035));
+        border: 1px solid rgba(255, 255, 255, 0.075);
+        filter: drop-shadow(-18px 24px 28px rgba(0, 0, 0, 0.34));
+        opacity: 0.6;
+        pointer-events: none;
+      }
+      @keyframes tileIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .share-top,
+      .row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: start;
+      }
+      .share-top {
+        display: block;
+      }
+      .label {
+        font-weight: 740;
+        overflow-wrap: anywhere;
+      }
+      .share .label {
+        max-width: calc(100% - 78px);
+        font-size: 19px;
+        line-height: 1.23;
+      }
+      .path {
+        margin-top: 9px;
+        color: var(--faint);
+        font-size: 11px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip {
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        background: rgba(255, 255, 255, 0.035);
+        color: rgba(244, 242, 238, 0.55);
+        padding: 5px 8px;
+        border-radius: 5px;
+        font-size: 11px;
+        font-weight: 650;
+      }
+      .chip.good { color: #9ee6b4; border-color: rgba(158, 230, 180, 0.18); }
+      .chip.warn { color: var(--warn); border-color: rgba(255, 208, 138, 0.18); }
+      .share-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .manual-add {
+        width: min(620px, 100%);
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 9px;
+      }
+      input {
+        min-width: 0;
+        height: 39px;
+        color: rgba(244, 242, 238, 0.84);
+        background: rgba(255, 255, 255, 0.046);
+        border: 1px solid rgba(255, 255, 255, 0.055);
+        border-radius: 7px;
+        padding: 0 12px;
+        outline: none;
+      }
+      input:focus { border-color: rgba(127, 215, 223, 0.55); }
+      .context {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: minmax(0, 0.92fr) minmax(190px, 0.76fr);
+        gap: 33px;
+      }
+      .context-block {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        gap: 18px;
+      }
+      .context-head {
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: 12px;
-        border-bottom: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.025);
       }
-      .panel h2 { margin: 0; font-size: 13px; letter-spacing: 0; }
-      .panel-body { padding: 14px; overflow: auto; display: grid; gap: 12px; align-content: start; }
-      .input-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-      input, select {
-        min-width: 0;
-        color: #edf4ef;
-        background: rgba(255, 255, 255, 0.07);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 9px 10px;
-        outline: none;
-      }
-      input:focus, select:focus { border-color: rgba(168, 238, 199, 0.62); }
-      .dropzone {
-        min-height: 142px;
-        border: 1px dashed rgba(255, 255, 255, 0.18);
-        border-style: dashed;
+      .context-body {
+        min-height: 0;
+        overflow: auto;
         display: grid;
-        place-items: center;
-        text-align: center;
-        color: rgba(237, 244, 239, 0.76);
-        padding: 18px;
-        border-radius: 10px;
-        transition: background 160ms ease, border-color 160ms ease;
+        gap: 16px;
+        align-content: start;
       }
-      .dropzone.active { background: rgba(168, 238, 199, 0.1); border-color: rgba(168, 238, 199, 0.62); }
-      .share {
-        padding: 12px;
+      .space {
         display: grid;
         gap: 10px;
-        border: 1px solid var(--line);
-        border-radius: 10px;
+        padding-bottom: 18px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
       }
-      .share-top, .row {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        align-items: center;
-      }
-      .label { font-weight: 650; overflow-wrap: anywhere; }
-      .path { color: var(--faint); font-size: 12px; overflow-wrap: anywhere; }
-      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-      .chip {
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.055);
-        color: rgba(237, 244, 239, 0.76);
-        padding: 4px 7px;
-        border-radius: 999px;
-        font-size: 12px;
-      }
-      .chip.good { color: #c9f6dc; border-color: rgba(168, 238, 199, 0.3); }
-      .chip.warn { color: #ffdca8; border-color: rgba(255, 207, 137, 0.35); }
-      .space { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
       .space:last-child { border-bottom: 0; }
-      .folder, .change, .activity {
+      .folder,
+      .change,
+      .activity {
         display: grid;
         grid-template-columns: 1fr auto;
         gap: 8px;
-        padding: 8px 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        align-items: baseline;
+        padding: 4px 0;
       }
-      .folder:last-child, .change:last-child, .activity:last-child { border-bottom: 0; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: rgba(237, 244, 239, 0.76); overflow-wrap: anywhere; }
-      .metric { color: rgba(237, 244, 239, 0.84); font-size: 12px; white-space: nowrap; }
-      .empty { color: var(--muted); padding: 12px 0; }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+        color: rgba(244, 242, 238, 0.54);
+        overflow-wrap: anywhere;
+      }
+      .metric {
+        color: rgba(244, 242, 238, 0.42);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .empty {
+        color: rgba(244, 242, 238, 0.42);
+        font-size: 13px;
+        padding: 16px 0;
+      }
       .toast {
         position: fixed;
-        right: 16px;
-        bottom: 16px;
+        right: 24px;
+        bottom: 22px;
         max-width: min(420px, calc(100vw - 32px));
-        background: rgba(10, 12, 11, 0.84);
-        border: 1px solid var(--line-strong);
-        border-radius: 8px;
-        padding: 12px 14px;
-        color: #edf4ef;
+        background: rgba(28, 30, 35, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 7px;
+        padding: 12px 15px;
+        color: rgba(244, 242, 238, 0.9);
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
         opacity: 0;
         transform: translateY(8px);
         transition: opacity 180ms ease, transform 180ms ease;
       }
       .toast.show { opacity: 1; transform: translateY(0); }
-      @media (max-width: 1060px) {
-        .grid { grid-template-columns: 1fr; }
+      @media (max-width: 1100px) {
         body { overflow: auto; }
-        .panel { min-height: 360px; }
+        .workspace { min-height: 100svh; padding: 36px 30px 30px; }
+        .content { grid-template-columns: 1fr; }
+        .context { grid-template-columns: 1fr; grid-template-rows: auto; }
       }
-      @media (max-width: 640px) {
-        .shell { grid-template-rows: auto 1fr; }
-        .topbar { align-items: flex-start; flex-direction: column; }
-        .actions, .input-row { width: 100%; }
-        .input-row { grid-template-columns: 1fr; }
+      @media (max-width: 740px) {
+        .shell { grid-template-columns: 56px 1fr; }
+        .rail { padding-top: 20px; }
+        .rail-plus { left: 9px; }
+        .topbar { flex-direction: column; }
+        .actions,
+        .manual-add { width: 100%; }
+        .manual-add { grid-template-columns: 1fr; }
         .button { width: 100%; }
+        .share-cloud { grid-template-columns: 1fr; padding-right: 0; }
+        .share-cloud .share { margin-top: 0 !important; }
       }
     </style>
   </head>
   <body>
     <main class="shell">
-      <header class="topbar">
-        <div class="brand">
-          <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
-          <h1>Agent Vault</h1>
-          <div class="device-line" id="connection">Loading</div>
+      <nav class="rail" aria-label="Agent Vault">
+        <div class="mark" aria-hidden="true"></div>
+        <div class="rail-stack">
+          <button class="rail-button active" title="Vault" aria-label="Vault"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
+          <button class="rail-button" id="refresh" title="Refresh" aria-label="Refresh"><span class="mini-icon refresh-icon" aria-hidden="true"></span></button>
         </div>
-        <div class="actions">
-          <button class="button" id="openFolder">Open sync folder</button>
-          <button class="button primary" id="syncAll">Sync now</button>
-        </div>
-      </header>
-      <section class="grid">
-        <aside class="panel">
-          <div class="panel-head">
-            <h2>Shared folders</h2>
-            <button class="button" id="chooseFolder">+ Add</button>
+        <button class="rail-button rail-plus" id="chooseFolder" title="Add shared folder" aria-label="Add shared folder">+</button>
+      </nav>
+      <section class="workspace">
+        <header class="topbar">
+          <div class="brand">
+            <h1>Agent Vault</h1>
+            <div class="device-line" id="connection">Loading</div>
           </div>
-          <div class="panel-body">
-            <div class="input-row">
-              <input id="pathInput" placeholder="~/Documents/Client Project" />
-              <button class="button" id="addPath">Add</button>
+          <div class="actions">
+            <button class="button" id="openFolder">Open</button>
+            <button class="button primary" id="syncAll">Sync</button>
+          </div>
+        </header>
+        <div class="content">
+          <section class="stage">
+            <div class="stage-head">
+              <h2>Shared folders</h2>
+              <div class="count-line" id="shareCount">0 sources</div>
             </div>
             <div class="dropzone" id="dropzone">
               <div>
-                <div class="label">Drop files or folders</div>
-                <div class="subtle">Uploads land in MacBook Shared / Desktop Drops</div>
+                <div class="drop-label">Drop files or folders</div>
+                <div class="drop-note">Quick drops land in Desktop Drops.</div>
               </div>
             </div>
-            <div id="shares"></div>
-          </div>
-        </aside>
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Vault</h2>
-            <span class="chip" id="pending">0 pending</span>
-          </div>
-          <div class="panel-body" id="structure"></div>
-        </section>
-        <aside class="panel">
-          <div class="panel-head">
-            <h2>Timeline</h2>
-            <button class="button" id="refresh">Refresh</button>
-          </div>
-          <div class="panel-body" id="activity"></div>
-        </aside>
+            <div class="share-cloud" id="shares"></div>
+            <div class="manual-add">
+              <input id="pathInput" placeholder="Paste a folder path" />
+              <button class="button" id="addPath">Add</button>
+            </div>
+          </section>
+          <aside class="context">
+            <section class="context-block">
+              <div class="context-head">
+                <h2>Vault</h2>
+                <span class="chip" id="pending">0 pending</span>
+              </div>
+              <div class="context-body" id="structure"></div>
+            </section>
+            <section class="context-block">
+              <div class="context-head">
+                <h2>Log</h2>
+              </div>
+              <div class="context-body" id="activity"></div>
+            </section>
+          </aside>
+        </div>
       </section>
     </main>
     <div class="toast" id="toast"></div>
@@ -673,6 +951,13 @@ function renderHtml(): string {
         while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
         return value.toFixed(value >= 10 || index === 0 ? 0 : 1) + " " + units[index];
       };
+      const fileLabel = (count) => count + " " + (count === 1 ? "file" : "files");
+      const shortPath = (value) => {
+        const text = String(value ?? "");
+        const parts = text.split("/").filter(Boolean);
+        if (parts.length <= 2) return text;
+        return ".../" + parts.slice(-2).join("/");
+      };
       const fmtTime = (value) => new Date(value).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
       async function refresh() {
@@ -685,35 +970,35 @@ function renderHtml(): string {
         try { host = new URL(summary.serverUrl).host; } catch {}
         $("connection").textContent = host + " / " + summary.defaultSpace;
         $("pending").textContent = summary.mainPendingActions + " pending";
+        $("shareCount").textContent = summary.shares.length + (summary.shares.length === 1 ? " source" : " sources");
         $("shares").innerHTML = summary.shares.length ? summary.shares.map((share) =>
-          '<div class="share">' +
+          '<article class="share">' +
             '<div class="share-top">' +
               '<div>' +
                 '<div class="label">' + esc(share.label) + '</div>' +
-                '<div class="path">' + esc(share.localDir) + '</div>' +
+                '<div class="path" title="' + esc(share.localDir) + '">' + esc(shortPath(share.localDir)) + '</div>' +
               '</div>' +
-              '<button class="button danger" data-remove="' + esc(share.id) + '">Remove</button>' +
             '</div>' +
             '<div class="chips">' +
-              '<span class="chip">' + esc(share.space) + '</span>' +
-              '<span class="chip">' + esc(share.remotePathPrefix) + '</span>' +
-              '<span class="chip ' + (share.available ? "good" : "warn") + '">' + (share.available ? share.localFileCount + " files" : "offline") + '</span>' +
+              '<span class="chip ' + (share.available ? "good" : "warn") + '">' + (share.available ? fileLabel(share.localFileCount) : "offline") + '</span>' +
               '<span class="chip ' + (share.pendingActions ? "warn" : "good") + '">' + share.pendingActions + ' pending</span>' +
             '</div>' +
-            '<div class="row">' +
+            '<div class="share-actions">' +
               '<button class="button" data-open="' + esc(share.localDir) + '">Open</button>' +
               '<button class="button primary" data-sync="' + esc(share.id) + '">Sync</button>' +
+              '<button class="button danger" data-remove="' + esc(share.id) + '">Remove</button>' +
             '</div>' +
-          '</div>'
-        ).join("") : '<div class="empty">No shared folders yet.</div>';
-        $("structure").innerHTML = summary.remoteSpaces.map((space) => {
-          const folders = (space.folders.length ? space.folders : [{ path: "/", count: 0, size: 0 }]).slice(0, 8).map((folder) =>
+          '</article>'
+        ).join("") : '<div class="empty">Press + or drop something here.</div>';
+        const visibleSpaces = summary.remoteSpaces.filter((space) => space.fileCount > 0 || space.name === summary.defaultSpace).slice(0, 4);
+        $("structure").innerHTML = visibleSpaces.length ? visibleSpaces.map((space) => {
+          const folders = (space.folders.length ? space.folders : [{ path: "/", count: 0, size: 0 }]).slice(0, 4).map((folder) =>
             '<div class="folder">' +
               '<span class="mono">' + esc(folder.path) + '</span>' +
               '<span class="metric">' + folder.count + ' / ' + fmtSize(folder.size) + '</span>' +
             '</div>'
           ).join("");
-          const changes = space.recentChanges.slice(0, 6).map((change) =>
+          const changes = space.recentChanges.slice(0, 2).map((change) =>
             '<div class="change">' +
               '<span class="mono">' + esc(change.operation) + ' ' + esc(change.path) + '</span>' +
               '<span class="metric">' + esc(change.device) + '</span>' +
@@ -723,15 +1008,14 @@ function renderHtml(): string {
             '<div class="row">' +
               '<div>' +
                 '<div class="label">' + esc(space.name) + '</div>' +
-                '<div class="subtle">' + space.fileCount + ' files / ' + fmtSize(space.size) + '</div>' +
+                '<div class="subtle">' + fileLabel(space.fileCount) + ' / ' + fmtSize(space.size) + '</div>' +
               '</div>' +
-              '<span class="chip">' + esc(space.permissions.join(", ")) + '</span>' +
             '</div>' +
             folders +
             changes +
           '</div>';
-        }).join("");
-        $("activity").innerHTML = summary.activity.length ? summary.activity.map((entry) =>
+        }).join("") : '<div class="empty">No vault files yet.</div>';
+        $("activity").innerHTML = summary.activity.length ? summary.activity.slice(0, 12).map((entry) =>
           '<div class="activity">' +
             '<span>' +
               '<div>' + esc(entry.message) + '</div>' +
