@@ -7,6 +7,8 @@ import {
   DEFAULT_SPACES,
   type AuditEventRecord,
   type AuditOperation,
+  type ChangeEventRecord,
+  type ChangeOperation,
   type DeviceRecord,
   type DeviceScopeRecord,
   type SpaceInfo,
@@ -47,6 +49,28 @@ interface AuditRow {
   version: number | null;
   hash: string | null;
   timestamp: string;
+}
+
+interface ChangeRow {
+  seq: number;
+  space: string;
+  operation: ChangeOperation;
+  path: string;
+  previous_path: string | null;
+  version: number | null;
+  hash: string | null;
+  device: string;
+  timestamp: string;
+}
+
+interface IdempotencyRow {
+  key: string;
+  method: string;
+  space: string;
+  path: string;
+  status: number;
+  response_json: string;
+  created_at: string;
 }
 
 interface SpaceRow {
@@ -92,6 +116,26 @@ export interface AuditInput {
   path: string;
   version?: number | null;
   hash?: string | null;
+}
+
+export interface ChangeInput {
+  device: string;
+  space: string;
+  operation: ChangeOperation;
+  path: string;
+  previousPath?: string | null;
+  version?: number | null;
+  hash?: string | null;
+}
+
+export interface IdempotencyRecord {
+  key: string;
+  method: string;
+  space: string;
+  path: string;
+  status: number;
+  responseJson: string;
+  createdAt: string;
 }
 
 export interface DeviceScopeInput {
@@ -146,6 +190,32 @@ function mapAudit(row: AuditRow): AuditEventRecord {
     version: row.version,
     hash: row.hash,
     timestamp: row.timestamp,
+  };
+}
+
+function mapChange(row: ChangeRow): ChangeEventRecord {
+  return {
+    seq: row.seq,
+    space: row.space,
+    operation: row.operation,
+    path: row.path,
+    previousPath: row.previous_path,
+    version: row.version,
+    hash: row.hash,
+    device: row.device,
+    timestamp: row.timestamp,
+  };
+}
+
+function mapIdempotency(row: IdempotencyRow): IdempotencyRecord {
+  return {
+    key: row.key,
+    method: row.method,
+    space: row.space,
+    path: row.path,
+    status: row.status,
+    responseJson: row.response_json,
+    createdAt: row.created_at,
   };
 }
 
@@ -236,6 +306,18 @@ export class VaultDb {
         timestamp TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS change_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        space TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        path TEXT NOT NULL,
+        previous_path TEXT,
+        version INTEGER,
+        hash TEXT,
+        device TEXT NOT NULL,
+        timestamp TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS devices (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
@@ -256,7 +338,19 @@ export class VaultDb {
         FOREIGN KEY(device_id) REFERENCES devices(id) ON DELETE CASCADE,
         FOREIGN KEY(space) REFERENCES spaces(name) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS idempotency_keys (
+        key TEXT PRIMARY KEY,
+        method TEXT NOT NULL,
+        space TEXT NOT NULL,
+        path TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        response_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
+    this.ensureColumn("files", "current_version", "INTEGER NOT NULL DEFAULT 1");
+    this.ensureColumn("files", "deleted_at", "TEXT");
   }
 
   close(): void {
@@ -392,6 +486,44 @@ export class VaultDb {
     return rows.map(mapAudit);
   }
 
+  listChanges(space: string, since: number): { changes: ChangeEventRecord[]; cursor: number } {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT seq, space, operation, path, previous_path, version, hash, device, timestamp
+        FROM change_events
+        WHERE space = ? AND seq > ?
+        ORDER BY seq
+      `,
+      )
+      .all(space, since) as unknown as ChangeRow[];
+    const latest = this.db.prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM change_events").get() as unknown as {
+      seq: number;
+    };
+    return {
+      changes: rows.map(mapChange),
+      cursor: latest.seq,
+    };
+  }
+
+  getIdempotency(key: string): IdempotencyRecord | undefined {
+    const row = this.db
+      .prepare("SELECT key, method, space, path, status, response_json, created_at FROM idempotency_keys WHERE key = ?")
+      .get(key) as unknown as IdempotencyRow | undefined;
+    return row ? mapIdempotency(row) : undefined;
+  }
+
+  saveIdempotency(input: Omit<IdempotencyRecord, "createdAt">): void {
+    this.db
+      .prepare(
+        `
+        INSERT INTO idempotency_keys (key, method, space, path, status, response_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(input.key, input.method, input.space, input.path, input.status, input.responseJson, nowIso());
+  }
+
   getVersion(fileId: string, version: number): VaultFileVersionRecord | undefined {
     const row = this.db
       .prepare(
@@ -462,6 +594,14 @@ export class VaultDb {
         version: input.version,
         hash: input.sha256,
       });
+      this.recordChangeEventInTransaction({
+        device: input.device,
+        space: input.space,
+        operation: input.operation === "upload" ? "create" : "update",
+        path: input.path,
+        version: input.version,
+        hash: input.sha256,
+      });
 
       this.db.exec("COMMIT");
     } catch (error: unknown) {
@@ -489,6 +629,14 @@ export class VaultDb {
         .prepare("UPDATE files SET deleted_at = ?, updated_at = ? WHERE id = ?")
         .run(deletedAt, deletedAt, existing.id);
       this.recordAuditEventInTransaction({
+        device,
+        space,
+        operation: "delete",
+        path: filePath,
+        version: existing.currentVersion,
+        hash: existing.sha256,
+      });
+      this.recordChangeEventInTransaction({
         device,
         space,
         operation: "delete",
@@ -536,6 +684,14 @@ export class VaultDb {
         version: restoredVersion.version,
         hash: restoredVersion.sha256,
       });
+      this.recordChangeEventInTransaction({
+        device,
+        space,
+        operation: "restore",
+        path: filePath,
+        version: restoredVersion.version,
+        hash: restoredVersion.sha256,
+      });
       this.db.exec("COMMIT");
     } catch (error: unknown) {
       this.db.exec("ROLLBACK");
@@ -545,6 +701,52 @@ export class VaultDb {
     const file = this.getFile(space, filePath);
     if (!file) {
       throw new Error("Failed to read file metadata after restore.");
+    }
+    return file;
+  }
+
+  moveFile(space: string, fromPath: string, toPath: string, storagePath: string, device: string): VaultFileRecord {
+    const existing = this.getFile(space, fromPath);
+    if (!existing || existing.deletedAt) {
+      throw new Error("File was not found.");
+    }
+    const target = this.getFile(space, toPath);
+    if (target && !target.deletedAt) {
+      throw new Error("Target file already exists.");
+    }
+
+    const movedAt = nowIso();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare("UPDATE files SET path = ?, storage_path = ?, updated_at = ? WHERE id = ?")
+        .run(toPath, storagePath, movedAt, existing.id);
+      this.recordAuditEventInTransaction({
+        device,
+        space,
+        operation: "move",
+        path: toPath,
+        version: existing.currentVersion,
+        hash: existing.sha256,
+      });
+      this.recordChangeEventInTransaction({
+        device,
+        space,
+        operation: "move",
+        path: toPath,
+        previousPath: fromPath,
+        version: existing.currentVersion,
+        hash: existing.sha256,
+      });
+      this.db.exec("COMMIT");
+    } catch (error: unknown) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    const file = this.getFile(space, toPath);
+    if (!file) {
+      throw new Error("Failed to read file metadata after move.");
     }
     return file;
   }
@@ -584,6 +786,26 @@ export class VaultDb {
     return id;
   }
 
+  private recordChangeEventInTransaction(input: ChangeInput): void {
+    this.db
+      .prepare(
+        `
+        INSERT INTO change_events (space, operation, path, previous_path, version, hash, device, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        input.space,
+        input.operation,
+        input.path,
+        input.previousPath ?? null,
+        input.version ?? null,
+        input.hash ?? null,
+        input.device,
+        nowIso(),
+      );
+  }
+
   private mapDeviceWithScopes(row: DeviceRow): DeviceRecord {
     const scopeRows = this.db
       .prepare(
@@ -620,5 +842,13 @@ export class VaultDb {
         permissions.has("admin") ? 1 : 0,
       );
     }
+  }
+
+  private ensureColumn(tableName: string, columnName: string, definition: string): void {
+    const rows = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as unknown as Array<{ name: string }>;
+    if (rows.some((row) => row.name === columnName)) {
+      return;
+    }
+    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
 }

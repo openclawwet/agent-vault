@@ -138,6 +138,14 @@ function queryPath(url: URL): string {
   return normalizeVaultPath(value);
 }
 
+function namedQueryPath(url: URL, name: string): string {
+  const value = url.searchParams.get(name);
+  if (!value) {
+    throw new HttpError(400, "missing_path", `A ${name} query parameter is required.`);
+  }
+  return normalizeVaultPath(value);
+}
+
 function hasPermission(auth: AuthContext, space: string, permission: VaultPermission): boolean {
   return auth.scopes.some((scope) => {
     if (scope.space !== space) {
@@ -207,6 +215,48 @@ function generateDeviceToken(): string {
   return randomBytes(32).toString("hex");
 }
 
+function idempotencyKey(req: IncomingMessage): string | undefined {
+  const header = req.headers["idempotency-key"];
+  const value = Array.isArray(header) ? header[0] : header;
+  return value?.trim() || undefined;
+}
+
+async function runIdempotentMutation(
+  app: AgentVaultApp,
+  req: IncomingMessage,
+  method: string,
+  space: string,
+  mutationPath: string,
+  mutate: () => Promise<{ status: number; body: unknown }>,
+): Promise<{ status: number; body: unknown }> {
+  const key = idempotencyKey(req);
+  if (!key) {
+    return mutate();
+  }
+
+  const existing = app.db.getIdempotency(key);
+  if (existing) {
+    if (existing.method !== method || existing.space !== space || existing.path !== mutationPath) {
+      throw new HttpError(409, "idempotency_key_conflict", "Idempotency key was already used for another mutation.");
+    }
+    return {
+      status: existing.status,
+      body: JSON.parse(existing.responseJson) as unknown,
+    };
+  }
+
+  const result = await mutate();
+  app.db.saveIdempotency({
+    key,
+    method,
+    space,
+    path: mutationPath,
+    status: result.status,
+    responseJson: JSON.stringify(result.body),
+  });
+  return result;
+}
+
 async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = parseUrl(req);
   const segments = routeSegments(url);
@@ -270,14 +320,25 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     return;
   }
 
+  if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "changes" && method === "GET") {
+    const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "read");
+    const since = Number.parseInt(url.searchParams.get("since") ?? "0", 10);
+    if (!Number.isInteger(since) || since < 0) {
+      throw new HttpError(400, "invalid_cursor", "Change cursor must be a non-negative integer.");
+    }
+    sendJson(res, 200, app.db.listChanges(space, since));
+    return;
+  }
+
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "audit" && method === "GET") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
     if (space === "system") {
       requireAnyAdmin(auth);
     } else {
       requirePermission(auth, space, "admin");
+      app.db.ensureSpace(space);
     }
-    app.db.ensureSpace(space);
     sendJson(res, 200, { events: app.db.listAudit(space) });
     return;
   }
@@ -287,21 +348,24 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     requirePermission(auth, space, "write");
     const filePath = queryPath(url);
     const body = await readBody(req);
-    const next = app.db.getNextVersion(space, filePath);
-    const stored = await app.storage.writeVersionedFile(space, next.fileId, next.version, filePath, body);
-    const file = app.db.upsertFileVersion({
-      id: next.fileId,
-      space: stored.space,
-      path: stored.path,
-      size: stored.size,
-      sha256: stored.sha256,
-      storagePath: stored.storagePath,
-      version: next.version,
-      versionStoragePath: stored.versionStoragePath,
-      device: auth.deviceName,
-      operation: next.operation,
+    const result = await runIdempotentMutation(app, req, method, space, filePath, async () => {
+      const next = app.db.getNextVersion(space, filePath);
+      const stored = await app.storage.writeVersionedFile(space, next.fileId, next.version, filePath, body);
+      const file = app.db.upsertFileVersion({
+        id: next.fileId,
+        space: stored.space,
+        path: stored.path,
+        size: stored.size,
+        sha256: stored.sha256,
+        storagePath: stored.storagePath,
+        version: next.version,
+        versionStoragePath: stored.versionStoragePath,
+        device: auth.deviceName,
+        operation: next.operation,
+      });
+      return { status: 201, body: { file } };
     });
-    sendJson(res, 201, { file });
+    sendJson(res, result.status, result.body);
     return;
   }
 
@@ -339,9 +403,12 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
       throw new HttpError(404, "file_not_found", "File was not found.");
     }
 
-    const trashPath = await app.storage.moveCurrentToTrash(space, file.path, file.id, file.currentVersion);
-    const deleted = app.db.markDeleted(space, file.path, auth.deviceName);
-    sendJson(res, 200, { file: deleted, trashPath });
+    const result = await runIdempotentMutation(app, req, method, space, filePath, async () => {
+      const trashPath = await app.storage.moveCurrentToTrash(space, file.path, file.id, file.currentVersion);
+      const deleted = app.db.markDeleted(space, file.path, auth.deviceName);
+      return { status: 200, body: { file: deleted, trashPath } };
+    });
+    sendJson(res, result.status, result.body);
     return;
   }
 
@@ -364,9 +431,35 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
       throw new HttpError(404, "version_not_found", "Version was not found.");
     }
 
-    await app.storage.restoreVersionToCurrent(versionRecord.storagePath, space, filePath);
-    const restored = app.db.restoreFile(space, filePath, version, auth.deviceName);
-    sendJson(res, 200, { file: restored });
+    const result = await runIdempotentMutation(app, req, method, space, `${filePath}@v${version}`, async () => {
+      await app.storage.restoreVersionToCurrent(versionRecord.storagePath, space, filePath);
+      const restored = app.db.restoreFile(space, filePath, version, auth.deviceName);
+      return { status: 200, body: { file: restored } };
+    });
+    sendJson(res, result.status, result.body);
+    return;
+  }
+
+  if (segments.length === 4 && segments[0] === "spaces" && segments[2] === "file" && segments[3] === "move" && method === "POST") {
+    const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "write");
+    const fromPath = namedQueryPath(url, "from");
+    const toPath = namedQueryPath(url, "to");
+    const file = app.db.getFile(space, fromPath);
+    if (!file || file.deletedAt) {
+      throw new HttpError(404, "file_not_found", "File was not found.");
+    }
+    const target = app.db.getFile(space, toPath);
+    if (target && !target.deletedAt) {
+      throw new HttpError(409, "target_exists", "Target file already exists.");
+    }
+
+    const result = await runIdempotentMutation(app, req, method, space, `${fromPath}->${toPath}`, async () => {
+      const storagePath = await app.storage.moveCurrentFile(space, fromPath, toPath);
+      const moved = app.db.moveFile(space, fromPath, toPath, storagePath, auth.deviceName);
+      return { status: 200, body: { file: moved } };
+    });
+    sendJson(res, result.status, result.body);
     return;
   }
 

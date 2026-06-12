@@ -62,7 +62,7 @@ try {
 
   const upload = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
     method: "PUT",
-    headers: macbookAuth,
+    headers: { ...macbookAuth, "idempotency-key": "smoke-create" },
     body: payload,
   });
   assert(upload.status === 201, `upload failed with ${upload.status}`);
@@ -71,6 +71,17 @@ try {
   assert(uploadedFile?.path === filePath, "uploaded metadata path mismatch");
   assert(uploadedFile?.size === payload.byteLength, "uploaded metadata size mismatch");
   assert(typeof uploadedFile.sha256 === "string", "uploaded metadata hash missing");
+  const baseHash = uploadedFile.sha256;
+
+  const retryUpload = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
+    method: "PUT",
+    headers: { ...macbookAuth, "idempotency-key": "smoke-create" },
+    body: payload,
+  });
+  assert(retryUpload.status === 201, "idempotent retry should return original status");
+  const retryJson = await expectJson(retryUpload);
+  const retryFile = retryJson.file as { currentVersion?: number } | undefined;
+  assert(retryFile?.currentVersion === 1, "idempotent retry should not create a second version");
 
   const deniedSpace = await fetch(`${started.url}/spaces/Archive/files`, { headers: macbookAuth });
   assert(deniedSpace.status === 403, "device should not read outside scoped space");
@@ -95,7 +106,7 @@ try {
 
   const update = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent(filePath)}`, {
     method: "PUT",
-    headers: rotatedAuth,
+    headers: { ...rotatedAuth, "idempotency-key": "smoke-update" },
     body: updatedPayload,
   });
   assert(update.status === 201, `update failed with ${update.status}`);
@@ -148,6 +159,34 @@ try {
   const restoredBytes = Buffer.from(await restoredDownload.arrayBuffer());
   assert(restoredBytes.equals(payload), "restored version bytes differ from version 1");
 
+  const move = await fetch(
+    `${started.url}/spaces/${space}/file/move?from=${encodeURIComponent(filePath)}&to=${encodeURIComponent("notes/moved.txt")}`,
+    {
+      method: "POST",
+      headers: auth,
+    },
+  );
+  assert(move.ok, "move endpoint failed");
+
+  const changes = await fetch(`${started.url}/spaces/${space}/changes?since=0`, { headers: rotatedAuth });
+  assert(changes.ok, "changes endpoint failed");
+  const changesJson = await expectJson(changes);
+  const changeEvents = changesJson.changes as Array<{ seq: number; operation: string; path: string; previousPath?: string | null }> | undefined;
+  assert(changeEvents?.some((event) => event.operation === "create" && event.path === filePath), "create change missing");
+  assert(changeEvents?.some((event) => event.operation === "update" && event.path === filePath), "update change missing");
+  assert(changeEvents?.some((event) => event.operation === "delete" && event.path === filePath), "delete change missing");
+  assert(changeEvents?.some((event) => event.operation === "restore" && event.path === filePath), "restore change missing");
+  const moveEvent = changeEvents?.find((event) => event.operation === "move");
+  assert(moveEvent?.path === "notes/moved.txt" && moveEvent.previousPath === filePath, "move change missing");
+  const firstSeq = changeEvents?.[0]?.seq;
+  assert(typeof firstSeq === "number", "change sequence missing");
+
+  const continuation = await fetch(`${started.url}/spaces/${space}/changes?since=${firstSeq}`, { headers: rotatedAuth });
+  assert(continuation.ok, "change continuation failed");
+  const continuationJson = await expectJson(continuation);
+  const continuedEvents = continuationJson.changes as Array<{ seq: number }> | undefined;
+  assert(continuedEvents?.every((event) => event.seq > firstSeq), "change continuation returned old events");
+
   const traversal = await fetch(`${started.url}/spaces/${space}/file?path=${encodeURIComponent("../escape.txt")}`, {
     method: "PUT",
     headers: auth,
@@ -161,7 +200,8 @@ try {
   const authEvents = authAuditJson.events as Array<{ operation: string }> | undefined;
   assert(authEvents?.some((event) => event.operation === "auth_failed"), "auth failure audit missing");
 
-  const storedPath = path.join(tempRoot, "storage", "spaces", space, "notes", "hello.txt");
+  assert(baseHash, "base hash missing");
+  const storedPath = path.join(tempRoot, "storage", "spaces", space, "notes", "moved.txt");
   const storedBytes = await readFile(storedPath);
   assert(storedBytes.equals(payload), "stored file bytes differ from uploaded bytes");
   await stat(path.join(tempRoot, "agent-vault.sqlite"));

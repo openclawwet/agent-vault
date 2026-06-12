@@ -121,6 +121,18 @@ export class FileStorage {
     return trashPath;
   }
 
+  async moveCurrentFile(spaceInput: string, fromInput: string, toInput: string): Promise<string> {
+    const space = normalizeSpaceName(spaceInput);
+    const fromPath = normalizeVaultPath(fromInput);
+    const toPath = normalizeVaultPath(toInput);
+    const source = this.resolveSpacePath(space, fromPath);
+    const destination = this.resolveSpacePath(space, toPath);
+
+    await mkdir(path.dirname(destination), { recursive: true });
+    await rename(source, destination);
+    return path.posix.join("spaces", space, toPath);
+  }
+
   async restoreVersionToCurrent(versionStoragePath: string, spaceInput: string, pathInput: string): Promise<void> {
     const body = await this.readStoragePath(versionStoragePath);
     const space = normalizeSpaceName(spaceInput);

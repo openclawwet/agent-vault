@@ -45,7 +45,8 @@ export interface VaultFileVersionRecord {
   createdAt: string;
 }
 
-export type AuditOperation = "upload" | "update" | "delete" | "restore" | "auth_failed";
+export type AuditOperation = "upload" | "update" | "delete" | "restore" | "move" | "auth_failed";
+export type ChangeOperation = "create" | "update" | "delete" | "restore" | "move";
 
 export interface AuditEventRecord {
   id: string;
@@ -55,6 +56,18 @@ export interface AuditEventRecord {
   path: string;
   version: number | null;
   hash: string | null;
+  timestamp: string;
+}
+
+export interface ChangeEventRecord {
+  seq: number;
+  space: string;
+  operation: ChangeOperation;
+  path: string;
+  previousPath: string | null;
+  version: number | null;
+  hash: string | null;
+  device: string;
   timestamp: string;
 }
 
