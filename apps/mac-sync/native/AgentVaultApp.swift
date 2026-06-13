@@ -164,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
     private var didLoadServer = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         installMenu()
         installStatusItem()
         createWindow()
@@ -184,12 +184,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         webView?.evaluateJavaScript("window.__agentVaultSetPaused && window.__agentVaultSetPaused(true)", completionHandler: nil)
         sender.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
         webView?.evaluateJavaScript("window.__agentVaultSetPaused && window.__agentVaultSetPaused(true)", completionHandler: nil)
         window?.orderOut(nil)
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow(nil)
+        return true
     }
 
     private func installMenu() {
@@ -520,6 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         if window == nil {
             createWindow()
         }
+        NSApp.setActivationPolicy(.regular)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         if let url = desktopUrl {

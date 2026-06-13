@@ -7,6 +7,7 @@ TOKEN_URL="${AGENT_VAULT_TOKEN_URL:-$SERVER_URL/install/macbook.token}"
 INSTALL_DIR="${AGENT_VAULT_INSTALL_DIR:-$HOME/.agent-vault/client/agent-vault}"
 APP_TARGET="${AGENT_VAULT_APP_PATH:-/Applications/Agent Vault.app}"
 APP_FALLBACK_TARGET="$HOME/Applications/Agent Vault.app"
+APP_BUNDLE_ID="com.nilsthomsen.agent-vault.desktop"
 SYNC_DIR="${AGENT_VAULT_SYNC_DIR:-$HOME/AgentVault}"
 SYNC_SPACE="${AGENT_VAULT_SYNC_SPACE:-MacBook Shared}"
 
@@ -44,6 +45,13 @@ if [[ ! -d "$TMP_DIR/agent-vault-client" ]]; then
   echo "Client package is invalid." >&2
   exit 1
 fi
+
+quit_existing_app() {
+  osascript -e "tell application id \"$APP_BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+  sleep 1
+}
+
+quit_existing_app
 
 rm -rf "$INSTALL_DIR"
 mv "$TMP_DIR/agent-vault-client" "$INSTALL_DIR"
@@ -116,6 +124,8 @@ fi
 "$INSTALL_DIR/bin/agent-vault-sync" install-login-agent --app "$APP_TARGET" >/dev/null || true
 
 curl -fsSL "$SERVER_URL/health" >/dev/null
+
+open "$APP_TARGET" >/dev/null 2>&1 || true
 
 cat <<EOF
 
