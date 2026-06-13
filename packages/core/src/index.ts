@@ -110,6 +110,11 @@ export interface ListFilesResult {
   files: VaultFileRecord[];
 }
 
+export interface ListVersionsResult {
+  file: VaultFileRecord;
+  versions: VaultFileVersionRecord[];
+}
+
 export interface ListSpacesResult {
   spaces: SpaceAccessInfo[];
 }

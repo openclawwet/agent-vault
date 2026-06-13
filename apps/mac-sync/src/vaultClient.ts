@@ -3,6 +3,7 @@ import type {
   CurrentDeviceResult,
   DeviceRecord,
   DeviceStatusResult,
+  ListVersionsResult,
   ListFilesResult,
   ListSpacesResult,
   SpaceAccessInfo,
@@ -65,6 +66,11 @@ export class VaultClient {
   async download(space: string, filePath: string): Promise<Buffer> {
     const response = await this.request(`/spaces/${encodeURIComponent(space)}/file?path=${encodeURIComponent(filePath)}`);
     return Buffer.from(await response.arrayBuffer());
+  }
+
+  async listVersions(space: string, filePath: string): Promise<ListVersionsResult> {
+    const response = await this.request(`/spaces/${encodeURIComponent(space)}/file/versions?path=${encodeURIComponent(filePath)}`);
+    return (await response.json()) as ListVersionsResult;
   }
 
   async delete(space: string, filePath: string, idempotencyKey: string): Promise<void> {

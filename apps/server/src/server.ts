@@ -542,6 +542,18 @@ async function handleRequest(app: AgentVaultApp, req: IncomingMessage, res: Serv
     return;
   }
 
+  if (segments.length === 4 && segments[0] === "spaces" && segments[2] === "file" && segments[3] === "versions" && method === "GET") {
+    const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
+    requirePermission(auth, space, "read");
+    const filePath = queryPath(url);
+    const file = app.db.getFile(space, filePath);
+    if (!file) {
+      throw new HttpError(404, "file_not_found", "File was not found.");
+    }
+    sendJson(res, 200, { file, versions: app.db.listVersions(file.id) });
+    return;
+  }
+
   if (segments.length === 3 && segments[0] === "spaces" && segments[2] === "file" && method === "PUT") {
     const space = normalizeSpaceName(segments[1] ?? DEFAULT_SPACE);
     requirePermission(auth, space, "write");

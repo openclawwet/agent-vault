@@ -102,6 +102,8 @@ fi
   --dir "$SYNC_DIR" \
   --space "$SYNC_SPACE" >/dev/null
 
+"$INSTALL_DIR/bin/agent-vault-sync" install-login-agent --app "$APP_TARGET" >/dev/null || true
+
 curl -fsSL "$SERVER_URL/health" >/dev/null
 
 cat <<EOF
@@ -113,6 +115,7 @@ Server: $SERVER_URL
 Daily commands:
   open "$APP_TARGET"
   "$HOME/.agent-vault/bin/agent-vault-sync" ui
+  "$HOME/.agent-vault/bin/agent-vault-sync" install-login-agent
   "$HOME/.agent-vault/bin/agent-vault-sync" push
   "$HOME/.agent-vault/bin/agent-vault-sync" pull
   "$HOME/.agent-vault/bin/agent-vault-sync" watch

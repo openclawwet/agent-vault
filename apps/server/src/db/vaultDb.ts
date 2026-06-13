@@ -628,6 +628,15 @@ export class VaultDb {
     return row ? mapVersion(row) : undefined;
   }
 
+  listVersions(fileId: string): VaultFileVersionRecord[] {
+    const rows = this.db
+      .prepare(
+        "SELECT id, file_id, version_number, size, sha256, storage_path, created_at FROM file_versions WHERE file_id = ? ORDER BY version_number DESC",
+      )
+      .all(fileId) as unknown as VersionRow[];
+    return rows.map(mapVersion);
+  }
+
   getNextVersion(space: string, filePath: string): { fileId: string; version: number; operation: "upload" | "update" } {
     const existing = this.getFile(space, filePath);
     return {

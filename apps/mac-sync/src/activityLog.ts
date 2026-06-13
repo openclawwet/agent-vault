@@ -2,7 +2,18 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-export type ActivityKind = "share_added" | "share_removed" | "share_updated" | "sync" | "drop_upload" | "file_download" | "error";
+export type ActivityKind =
+  | "share_added"
+  | "share_removed"
+  | "share_updated"
+  | "sync"
+  | "drop_upload"
+  | "file_download"
+  | "file_edit"
+  | "file_writeback"
+  | "conflict"
+  | "login_agent"
+  | "error";
 
 export interface ActivityEntry {
   id: string;

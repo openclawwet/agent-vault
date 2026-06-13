@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { initConfig, loadConfig } from "./config.js";
+import { installLoginAgent, uninstallLoginAgent } from "./loginAgent.js";
 import { openNativeDesktopApp } from "./nativeApp.js";
 import { watchAllSources } from "./autoSync.js";
 import { pullCommand, pushCommand, scanCommand, statusCommand } from "./syncCommands.js";
@@ -53,6 +54,12 @@ if (command === "init") {
     console.log(JSON.stringify(await pullCommand(config), null, 2));
   } else if (command === "watch") {
     await watchAllSources(config);
+  } else if (command === "install-login-agent") {
+    const plist = await installLoginAgent({ appPath: options.app });
+    console.log(`Agent Vault login agent written to ${plist}`);
+  } else if (command === "uninstall-login-agent") {
+    const plist = await uninstallLoginAgent();
+    console.log(`Agent Vault login agent removed from ${plist}`);
   } else if (command === "serve-ui") {
     const started = await startDesktopUi(config, {
       port: options.port ? Number.parseInt(options.port, 10) : undefined,

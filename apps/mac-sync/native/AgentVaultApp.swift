@@ -55,8 +55,8 @@ final class DragHandleView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, alphaValue > 0.01, bounds.contains(point) else { return nil }
 
-        let trafficAndAddButtonZone = NSRect(x: 0, y: 0, width: 138, height: bounds.height)
-        let topActionZone = NSRect(x: max(0, bounds.width - 220), y: 0, width: 220, height: bounds.height)
+        let trafficAndAddButtonZone = NSRect(x: 0, y: 0, width: 78, height: bounds.height)
+        let topActionZone = NSRect(x: max(0, bounds.width - 246), y: 0, width: 246, height: bounds.height)
         if trafficAndAddButtonZone.contains(point) || topActionZone.contains(point) {
             return nil
         }
@@ -399,6 +399,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sync.target = self
         menu.addItem(sync)
 
+        let saveEdits = NSMenuItem(title: "Save Edits", action: #selector(saveEdits(_:)), keyEquivalent: "")
+        saveEdits.target = self
+        menu.addItem(saveEdits)
+
         let refresh = NSMenuItem(title: "Refresh Status", action: #selector(refreshStatus(_:)), keyEquivalent: "")
         refresh.target = self
         menu.addItem(refresh)
@@ -433,15 +437,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }.resume()
     }
 
+    @objc private func saveEdits(_ sender: Any?) {
+        guard let url = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/writeback-edits") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = "{}".data(using: .utf8)
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                self?.pollSummary()
+                self?.webView?.evaluateJavaScript("window.__agentVaultNativeRefresh && window.__agentVaultNativeRefresh('Edits saved')", completionHandler: nil)
+            }
+        }.resume()
+    }
+
     private func handleDroppedUrls(_ urls: [URL]) {
-        guard let baseUrl = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/ingest-paths") else { return }
         let paths = urls.map { $0.path }.filter { !$0.isEmpty }
         guard !paths.isEmpty else { return }
+
+        webView?.evaluateJavaScript("window.__agentVaultCurrentDropTarget ? window.__agentVaultCurrentDropTarget() : null") { [weak self] result, _ in
+            self?.postDroppedPaths(paths, target: result as? [String: Any])
+        }
+    }
+
+    private func postDroppedPaths(_ paths: [String], target: [String: Any]?) {
+        guard let baseUrl = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/ingest-paths") else { return }
+        var payload: [String: Any] = ["paths": paths]
+        if let target {
+            payload["target"] = target
+        }
 
         var request = URLRequest(url: baseUrl)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["paths": paths], options: [])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload, options: [])
 
         URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
             DispatchQueue.main.async {

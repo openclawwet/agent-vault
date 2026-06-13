@@ -4,6 +4,8 @@ dist/
 .env
 .agent-vault/
 *.log
+.playwright-cli/
+output/
 apps/web/public/install/*.tar.gz
 apps/web/public/install/*.token
 apps/mac-sync/native/build/

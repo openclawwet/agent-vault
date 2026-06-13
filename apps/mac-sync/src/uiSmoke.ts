@@ -18,6 +18,7 @@ const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-vault-ui-"));
 process.env.AGENT_VAULT_SHARES_CONFIG = path.join(tempRoot, "shares.json");
 process.env.AGENT_VAULT_ACTIVITY_LOG = path.join(tempRoot, "activity.jsonl");
 process.env.AGENT_VAULT_DOWNLOAD_DIR = path.join(tempRoot, "downloads");
+process.env.AGENT_VAULT_EDIT_DIR = path.join(tempRoot, "edits");
 
 const token = `ui-${randomBytes(16).toString("hex")}`;
 const startedVault = await startAgentVaultServer({
@@ -51,11 +52,12 @@ try {
   assert(page.ok, "desktop UI page failed");
   const html = await page.text();
   assert(html.includes("Agent Vault"), "desktop UI HTML missing product name");
-  assert(html.includes("view-schema"), "desktop UI HTML missing schema view");
   assert(html.includes("dropSurface"), "desktop UI HTML missing global drop surface");
   assert(html.includes('id="devices"'), "desktop UI HTML missing devices section");
   assert(html.includes('id="flow"'), "desktop UI HTML missing flow section");
+  assert(html.includes('class="vault-sidebar"'), "desktop UI HTML missing connected device sidebar");
   assert(html.includes('id="folderBrowser"'), "desktop UI HTML missing Finder-style folder browser");
+  assert(html.includes('data-view="schema"'), "desktop UI HTML missing schema view switch");
   assert(html.includes('data-view-mode="grid"'), "desktop UI HTML missing icon view mode");
   assert(html.includes('data-view-mode="large"'), "desktop UI HTML missing large icon view mode");
   assert(html.includes('data-view-mode="list"'), "desktop UI HTML missing list view mode");
@@ -70,6 +72,16 @@ try {
   assert(html.includes('data-source-device'), "desktop UI HTML missing source device marking");
   assert(html.includes("data-download-path"), "desktop UI HTML missing file download action");
   assert(html.includes("DownloadURL"), "desktop UI HTML missing drag-out download payload");
+  assert(html.includes('id="saveEdits"'), "desktop UI HTML missing edit writeback action");
+  assert(html.includes("/api/edit-remote"), "desktop UI HTML missing editable remote file flow");
+  assert(html.includes("/api/writeback-edits"), "desktop UI HTML missing writeback flow");
+  assert(html.includes("__agentVaultCurrentDropTarget"), "desktop UI HTML missing contextual drop target");
+  assert(html.includes('effectAllowed = "copy"'), "desktop UI HTML missing copy-safe drag-out");
+  assert(html.includes("agentVault.schema.nodePositions"), "desktop UI HTML missing draggable schema persistence");
+  assert(html.includes('id="layoutReset"'), "desktop UI HTML missing schema layout reset");
+  assert(html.includes("refresh({ silent: true })"), "desktop UI HTML missing quiet auto-refresh");
+  assert(!html.includes("nav-float"), "desktop UI should not render a left view rail");
+  assert(!html.includes("shared sources"), "desktop UI should not render a separate source headline above the grid");
   assert(!html.includes('id="treeSection"'), "desktop UI should not render a separate tree inspector");
   assert(!html.includes('data-side-mode'), "desktop UI should not render a tree/system switch");
   assert(!html.includes('id="shares"'), "desktop UI should not render a separate source column");
@@ -145,6 +157,85 @@ try {
     markerListed?.some((file) => file.path === "Client Docs/Research Notes/.agent-vault-folder"),
     "shared empty folder marker was not uploaded",
   );
+
+  const droppedFile = path.join(tempRoot, "drop-note.txt");
+  await writeFile(droppedFile, "targeted native drop\n");
+  const targetedIngest = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/ingest-paths`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths: [droppedFile], target: { space: "MacBook Shared", pathPrefix: "Client Docs/Research Notes" } }),
+  });
+  assert(targetedIngest.status === 201, `targeted file ingest failed with ${targetedIngest.status}`);
+  const targetedFiles = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/files`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const targetedJson = await expectJson(targetedFiles);
+  const targetedListed = targetedJson.files as Array<{ path: string }> | undefined;
+  assert(
+    targetedListed?.some((file) => file.path === "Client Docs/Research Notes/drop-note.txt"),
+    "targeted dropped file was not uploaded into the open folder path",
+  );
+
+  const edit = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/edit-remote`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ space: "MacBook Shared", path: "Client Docs/brief.txt" }),
+  });
+  assert(edit.status === 200, `edit remote failed with ${edit.status}`);
+  const editJson = await expectJson(edit);
+  const editSession = editJson.edit as { targetPath?: string } | undefined;
+  assert(editSession?.targetPath, "editable target path missing");
+  await writeFile(editSession.targetPath, "edited client brief\n");
+  const writeback = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/writeback-edits`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert(writeback.status === 200, `writeback failed with ${writeback.status}`);
+  const writebackJson = await expectJson(writeback);
+  const writebackResult = writebackJson.writeback as { uploaded?: number; conflicts?: number } | undefined;
+  assert(writebackResult?.uploaded === 1 && writebackResult.conflicts === 0, "writeback should upload edited copy without conflict");
+  const editedDownload = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/file?path=${encodeURIComponent("Client Docs/brief.txt")}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  assert((await editedDownload.text()) === "edited client brief\n", "edited remote file content mismatch");
+
+  const versions = await fetch(
+    `${startedVault.url}/spaces/MacBook%20Shared/file/versions?path=${encodeURIComponent("Client Docs/brief.txt")}`,
+    { headers: { authorization: `Bearer ${token}` } },
+  );
+  assert(versions.status === 200, `versions failed with ${versions.status}`);
+  const versionsJson = await expectJson(versions);
+  const versionRows = versionsJson.versions as Array<{ version?: number }> | undefined;
+  assert((versionRows?.length ?? 0) >= 2, "version history should include edited writeback");
+
+  const conflictEdit = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/edit-remote`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ space: "MacBook Shared", path: "Client Docs/brief.txt" }),
+  });
+  const conflictJson = await expectJson(conflictEdit);
+  const conflictSession = conflictJson.edit as { targetPath?: string } | undefined;
+  assert(conflictSession?.targetPath, "conflict edit target path missing");
+  await writeFile(conflictSession.targetPath, "local conflict edit\n");
+  const remoteUpdate = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/file?path=${encodeURIComponent("Client Docs/brief.txt")}`, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "idempotency-key": "ui-smoke-remote-conflict-update",
+    },
+    body: "remote parallel edit\n",
+  });
+  assert(remoteUpdate.status === 201, `remote parallel update failed with ${remoteUpdate.status}`);
+  const conflictWriteback = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/writeback-edits`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert(conflictWriteback.status === 200, `conflict writeback failed with ${conflictWriteback.status}`);
+  const conflictWritebackJson = await expectJson(conflictWriteback);
+  const conflictResult = conflictWritebackJson.writeback as { conflicts?: number } | undefined;
+  assert((conflictResult?.conflicts ?? 0) >= 1, "parallel edit should create a writeback conflict");
 
   const droppedDir = path.join(tempRoot, "Dropped Docs");
   await mkdir(droppedDir, { recursive: true });

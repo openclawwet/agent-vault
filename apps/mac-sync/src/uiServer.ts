@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -231,6 +231,9 @@ interface TreeNode {
   kind: TreeNodeKind;
   count: number;
   size: number;
+  version?: number;
+  sha256?: string;
+  updatedAt?: string;
   truncated?: boolean;
   children?: TreeNode[];
 }
@@ -238,6 +241,10 @@ interface TreeNode {
 interface TreeFile {
   path: string;
   size: number;
+  version?: number;
+  currentVersion?: number;
+  sha256?: string;
+  updatedAt?: string;
   folderMarker?: boolean;
 }
 
@@ -290,6 +297,9 @@ function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
           kind: isFile ? "file" : "folder",
           count: 0,
           size: 0,
+          version: isFile ? (file.version ?? file.currentVersion) : undefined,
+          sha256: isFile ? file.sha256 : undefined,
+          updatedAt: isFile ? file.updatedAt : undefined,
           children: isFile ? undefined : [],
         };
         cursor.children.push(child);
@@ -297,6 +307,11 @@ function fileTree(files: TreeFile[], prefix = "", maxNodes = 700): TreeNode[] {
       }
       child.count += file.folderMarker ? 0 : 1;
       child.size += file.size;
+      if (isFile) {
+        child.version = file.version ?? file.currentVersion;
+        child.sha256 = file.sha256;
+        child.updatedAt = file.updatedAt;
+      }
       cursor = child;
     }
   }
@@ -359,10 +374,18 @@ function immediateFolderEntries(files: TreeFile[], prefix = "", folder = "", max
         kind,
         count: 0,
         size: 0,
+        version: isDirectFile ? (file.version ?? file.currentVersion) : undefined,
+        sha256: isDirectFile ? file.sha256 : undefined,
+        updatedAt: isDirectFile ? file.updatedAt : undefined,
         children: kind === "folder" ? [] : undefined,
       };
     existing.count += isFolderMarker ? 0 : 1;
     existing.size += isFolderMarker ? 0 : file.size;
+    if (isDirectFile) {
+      existing.version = file.version ?? file.currentVersion;
+      existing.sha256 = file.sha256;
+      existing.updatedAt = file.updatedAt;
+    }
     children.set(key, existing);
 
     if (children.size >= maxEntries) {
@@ -640,7 +663,7 @@ async function buildSummary(config: MacSyncConfig, options: { waitForRemote?: bo
     createdAt: new Date().toISOString(),
     permissions: [],
   };
-  const [spacesResult, mainStatus, activity, deviceSummary] = await Promise.all([
+  const [spacesResult, mainStatus, activity, deviceSummary, edits] = await Promise.all([
     vault.listSpaces().then(
       (spaces) => ({ spaces, error: null as string | null }),
       (error: unknown) => ({
@@ -659,6 +682,7 @@ async function buildSummary(config: MacSyncConfig, options: { waitForRemote?: bo
       presenceVisible: false,
       adminVisible: false,
     })),
+    editStatus().catch(() => ({ sessions: [], openCount: 0, conflictCount: 0 })),
   ]);
   const spaces = spacesResult.spaces;
   const localShares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share, { checkPending: options.checkPending })));
@@ -709,6 +733,7 @@ async function buildSummary(config: MacSyncConfig, options: { waitForRemote?: bo
     flowStats: flowStats(recentChanges, remoteFiles),
     recentChanges,
     activity,
+    edits,
   };
 }
 
@@ -759,6 +784,80 @@ function downloadRoot(): string {
   return process.env.AGENT_VAULT_DOWNLOAD_DIR ?? path.join(os.homedir(), ".agent-vault", "downloads");
 }
 
+function editRoot(): string {
+  return process.env.AGENT_VAULT_EDIT_DIR ?? path.join(os.homedir(), ".agent-vault", "edits");
+}
+
+function editSessionPath(): string {
+  return path.join(editRoot(), "sessions.json");
+}
+
+function editConflictRoot(): string {
+  return path.join(editRoot(), "conflicts");
+}
+
+function sha256BufferLocal(body: Buffer): string {
+  return createHash("sha256").update(body).digest("hex");
+}
+
+interface EditSession {
+  id: string;
+  space: string;
+  path: string;
+  targetPath: string;
+  baseHash: string;
+  currentVersion: number | null;
+  status: "open" | "synced" | "conflict";
+  openedAt: string;
+  updatedAt: string;
+  conflictPath?: string;
+  conflictReason?: string;
+}
+
+async function readEditSessions(): Promise<EditSession[]> {
+  try {
+    const body = await readFile(editSessionPath(), "utf8");
+    const parsed = JSON.parse(body) as { sessions?: EditSession[] };
+    return Array.isArray(parsed.sessions) ? parsed.sessions : [];
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+    return [];
+  }
+}
+
+async function writeEditSessions(sessions: EditSession[]): Promise<void> {
+  const target = editSessionPath();
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, `${JSON.stringify({ sessions }, null, 2)}\n`, { mode: 0o600 });
+}
+
+function editableTargetPath(space: string, filePath: string): string {
+  return path.join(editRoot(), "files", space, ...filePath.split("/"));
+}
+
+function conflictTargetPath(space: string, filePath: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const fileName = path.basename(filePath);
+  const folder = path.dirname(filePath);
+  const safeFolder = folder === "." ? "" : folder;
+  return path.join(editConflictRoot(), space, ...safeFolder.split("/").filter(Boolean), `${stamp}-${fileName}`);
+}
+
+async function editStatus() {
+  const sessions = await readEditSessions();
+  const visible = sessions
+    .slice()
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, 12);
+  return {
+    sessions: visible,
+    openCount: sessions.filter((session) => session.status !== "synced").length,
+    conflictCount: sessions.filter((session) => session.status === "conflict").length,
+  };
+}
+
 async function downloadRemoteFile(config: MacSyncConfig, input: Record<string, unknown>) {
   const space = safeDownloadSpace(String(input.space ?? config.space));
   const filePath = safeRemoteFilePath(String(input.path ?? ""));
@@ -781,6 +880,145 @@ async function downloadRemoteFile(config: MacSyncConfig, input: Record<string, u
   return { space, path: filePath, size: body.byteLength, targetPath };
 }
 
+async function openEditableRemoteFile(config: MacSyncConfig, input: Record<string, unknown>) {
+  const space = safeDownloadSpace(String(input.space ?? config.space));
+  const filePath = safeRemoteFilePath(String(input.path ?? ""));
+  const vault = new VaultClient(config.serverUrl, config.token);
+  const [body, files] = await Promise.all([vault.download(space, filePath), vault.listFiles(space)]);
+  const current = files.find((file) => file.path === filePath);
+  const baseHash = current?.sha256 ?? sha256BufferLocal(body);
+  const targetPath = editableTargetPath(space, filePath);
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, body);
+
+  const sessions = (await readEditSessions()).filter((session) => !(session.space === space && session.path === filePath));
+  const now = new Date().toISOString();
+  const session: EditSession = {
+    id: randomUUID(),
+    space,
+    path: filePath,
+    targetPath,
+    baseHash,
+    currentVersion: current?.currentVersion ?? null,
+    status: "open",
+    openedAt: now,
+    updatedAt: now,
+  };
+  sessions.push(session);
+  await writeEditSessions(sessions);
+  openPath(targetPath);
+  await recordActivity("file_edit", `Opened editable copy ${filePath}`, {
+    space,
+    path: filePath,
+    targetPath,
+    baseHash,
+    currentVersion: session.currentVersion,
+  });
+  return session;
+}
+
+async function writeBackEditedFiles(config: MacSyncConfig, input: Record<string, unknown> = {}) {
+  const requestedId = typeof input.id === "string" ? input.id : "";
+  const requestedPath = typeof input.path === "string" ? input.path : "";
+  const sessions = await readEditSessions();
+  const nextSessions: EditSession[] = [];
+  const vault = new VaultClient(config.serverUrl, config.token);
+  const results: Array<{ id: string; path: string; status: string; reason?: string }> = [];
+
+  for (const session of sessions) {
+    const isRequested = requestedId ? session.id === requestedId : requestedPath ? session.path === requestedPath : true;
+    if (!isRequested) {
+      nextSessions.push(session);
+      continue;
+    }
+
+    try {
+      const body = await readFile(session.targetPath);
+      const localHash = sha256BufferLocal(body);
+      if (localHash === session.baseHash) {
+        nextSessions.push({ ...session, status: session.status === "conflict" ? "conflict" : "synced", updatedAt: new Date().toISOString() });
+        results.push({ id: session.id, path: session.path, status: "unchanged" });
+        continue;
+      }
+
+      const remote = (await vault.listFiles(session.space)).find((file) => file.path === session.path);
+      if (remote && remote.sha256 !== session.baseHash) {
+        const conflictPath = conflictTargetPath(session.space, session.path);
+        await mkdir(path.dirname(conflictPath), { recursive: true });
+        await writeFile(conflictPath, body);
+        const conflictSession: EditSession = {
+          ...session,
+          status: "conflict",
+          updatedAt: new Date().toISOString(),
+          conflictPath,
+          conflictReason: "Remote changed before writeback.",
+        };
+        nextSessions.push(conflictSession);
+        results.push({ id: session.id, path: session.path, status: "conflict", reason: conflictSession.conflictReason });
+        await recordActivity("conflict", `Writeback conflict ${session.path}`, {
+          space: session.space,
+          path: session.path,
+          conflictPath,
+          baseHash: session.baseHash,
+          remoteHash: remote.sha256,
+          localHash,
+        });
+        continue;
+      }
+
+      const uploaded = await vault.upload(
+        session.space,
+        session.path,
+        body,
+        `${config.deviceId}:${session.space}:edit-writeback:${session.path}:${localHash}`,
+      );
+      const updated: EditSession = {
+        ...session,
+        baseHash: uploaded.sha256,
+        currentVersion: uploaded.currentVersion,
+        status: "synced",
+        updatedAt: new Date().toISOString(),
+        conflictPath: undefined,
+        conflictReason: undefined,
+      };
+      nextSessions.push(updated);
+      results.push({ id: session.id, path: session.path, status: "uploaded" });
+      remoteSnapshot = null;
+      await recordActivity("file_writeback", `Wrote back edited file ${session.path}`, {
+        space: session.space,
+        path: session.path,
+        size: uploaded.size,
+        version: uploaded.currentVersion,
+      });
+    } catch (error: unknown) {
+      nextSessions.push({
+        ...session,
+        status: "conflict",
+        updatedAt: new Date().toISOString(),
+        conflictReason: error instanceof Error ? error.message : "Writeback failed.",
+      });
+      results.push({
+        id: session.id,
+        path: session.path,
+        status: "error",
+        reason: error instanceof Error ? error.message : "Writeback failed.",
+      });
+      await recordActivity("error", `Writeback failed ${session.path}`, {
+        space: session.space,
+        path: session.path,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  await writeEditSessions(nextSessions);
+  return {
+    results,
+    uploaded: results.filter((result) => result.status === "uploaded").length,
+    conflicts: results.filter((result) => result.status === "conflict" || result.status === "error").length,
+  };
+}
+
 async function createFolderMarker(config: MacSyncConfig, share: ShareRecord, folderName: string) {
   const folder = safeRelativeFolder(folderName);
   const targetDir = path.join(share.localDir, ...folder.split("/"));
@@ -799,7 +1037,37 @@ async function createFolderMarker(config: MacSyncConfig, share: ShareRecord, fol
   return { folder, marker: ".agent-vault-folder", synced };
 }
 
-async function ingestLocalPath(config: MacSyncConfig, inputPath: string) {
+interface DropTarget {
+  space?: string;
+  pathPrefix?: string;
+}
+
+function dropTargetFromInput(value: unknown, config: MacSyncConfig): { space: string; pathPrefix: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { space: config.space, pathPrefix: "Desktop Drops" };
+  }
+  const target = value as DropTarget;
+  return {
+    space: safeDownloadSpace(String(target.space ?? config.space)),
+    pathPrefix: safeOptionalRemotePath(String(target.pathPrefix ?? "Desktop Drops")) || "Desktop Drops",
+  };
+}
+
+async function uploadLocalFileToVault(config: MacSyncConfig, localPath: string, target: { space: string; pathPrefix: string }) {
+  const body = await readFile(localPath);
+  const filePath = safeRemoteFilePath(`${target.pathPrefix}/${path.basename(localPath)}`);
+  const uploaded = await new VaultClient(config.serverUrl, config.token).upload(
+    target.space,
+    filePath,
+    body,
+    `${config.deviceId}:${target.space}:native-drop:${filePath}:${sha256BufferLocal(body)}`,
+  );
+  remoteSnapshot = null;
+  await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space: target.space, path: filePath, size: body.byteLength });
+  return { kind: "file", file: uploaded };
+}
+
+async function ingestLocalPath(config: MacSyncConfig, inputPath: string, target: { space: string; pathPrefix: string }) {
   const localPath = path.resolve(inputPath);
   const localStat = await stat(localPath);
   if (localStat.isDirectory()) {
@@ -822,16 +1090,7 @@ async function ingestLocalPath(config: MacSyncConfig, inputPath: string) {
     throw new UiError(400, "unsupported_drop_path", "Dropped path must be a file or folder.");
   }
 
-  const body = await readFile(localPath);
-  const filePath = `Desktop Drops/${path.basename(localPath)}`;
-  const uploaded = await new VaultClient(config.serverUrl, config.token).upload(
-    config.space,
-    filePath,
-    body,
-    `${config.deviceId}:${config.space}:native-drop:${filePath}:${randomUUID()}`,
-  );
-  await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space: config.space, path: filePath, size: body.byteLength });
-  return { kind: "file", file: uploaded };
+  return uploadLocalFileToVault(config, localPath, target);
 }
 
 function startUiAutoSync(config: MacSyncConfig): () => void {
@@ -843,8 +1102,10 @@ function startUiAutoSync(config: MacSyncConfig): () => void {
     if (running || closed) return;
     running = true;
     try {
+      await writeBackEditedFiles(config, {});
       const result = await syncAllSources(config);
       if (summaryChanged(result.total)) {
+        remoteSnapshot = null;
         await recordActivity("sync", `Auto-synced Agent Vault sources (${reason})`, {
           total: result.total,
           shares: result.shares.map((share) => ({ label: share.label, summary: share.summary })),
@@ -906,6 +1167,26 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
   if (method === "POST" && route.join("/") === "api/download-remote") {
     const body = await readJson(req);
     sendJson(res, 200, { download: await downloadRemoteFile(config, body) });
+    return;
+  }
+
+  if (method === "POST" && route.join("/") === "api/edit-remote") {
+    const body = await readJson(req);
+    sendJson(res, 200, { edit: await openEditableRemoteFile(config, body) });
+    return;
+  }
+
+  if (method === "POST" && route.join("/") === "api/writeback-edits") {
+    const body = await readJson(req);
+    sendJson(res, 200, { writeback: await writeBackEditedFiles(config, body) });
+    return;
+  }
+
+  if (method === "GET" && route.join("/") === "api/versions") {
+    const space = safeDownloadSpace(String(url.searchParams.get("space") ?? config.space));
+    const filePath = safeRemoteFilePath(String(url.searchParams.get("path") ?? ""));
+    const versions = await new VaultClient(config.serverUrl, config.token).listVersions(space, filePath);
+    sendJson(res, 200, versions);
     return;
   }
 
@@ -1017,8 +1298,8 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
   }
 
   if (method === "POST" && route.join("/") === "api/drop") {
-    const space = url.searchParams.get("space") || config.space;
-    const filePath = url.searchParams.get("path") || `${new Date().toISOString()}-drop.bin`;
+    const space = safeDownloadSpace(url.searchParams.get("space") || config.space);
+    const filePath = safeRemoteFilePath(url.searchParams.get("path") || `${new Date().toISOString()}-drop.bin`);
     const body = await readBody(req);
     const uploaded = await new VaultClient(config.serverUrl, config.token).upload(
       space,
@@ -1038,9 +1319,10 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
     if (!paths.length) {
       throw new UiError(400, "missing_paths", "At least one local path is required.");
     }
+    const target = dropTargetFromInput(body.target, config);
     const results = [];
     for (const localPath of paths) {
-      results.push(await ingestLocalPath(config, localPath));
+      results.push(await ingestLocalPath(config, localPath, target));
     }
     remoteSnapshot = null;
     sendJson(res, 201, { results });
@@ -1181,7 +1463,7 @@ function renderHtml(): string {
       .shell {
         position: relative;
         min-height: 100svh;
-        padding: 21px 34px 31px 93px;
+        padding: 21px 34px 31px;
         background: transparent;
       }
       .topline {
@@ -1189,10 +1471,11 @@ function renderHtml(): string {
         z-index: 5;
         height: 34px;
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 1fr) auto;
         gap: 12px;
         align-items: center;
         border-bottom: 1px solid rgba(237, 230, 218, 0.08);
+        -webkit-app-region: drag;
       }
       .add-button,
       .icon-button,
@@ -1241,6 +1524,7 @@ function renderHtml(): string {
         align-items: center;
         justify-content: flex-end;
         gap: 6px;
+        -webkit-app-region: no-drag;
       }
       .text-button {
         min-height: 27px;
@@ -1263,14 +1547,6 @@ function renderHtml(): string {
         background: rgba(237, 230, 218, 0.09);
         border-color: rgba(237, 230, 218, 0.11);
       }
-      .nav-float {
-        position: fixed;
-        left: 25px;
-        top: 66px;
-        z-index: 8;
-        display: grid;
-        gap: 9px;
-      }
       .icon-button {
         width: 34px;
         height: 34px;
@@ -1280,9 +1556,9 @@ function renderHtml(): string {
         place-items: center;
       }
       .icon-button.active {
-        color: rgba(237, 230, 218, 0.92);
-        background: rgba(237, 230, 218, 0.08);
-        border: 1px solid rgba(237, 230, 218, 0.095);
+        color: rgba(237, 230, 218, 0.96);
+        background: transparent;
+        border-color: transparent;
       }
       .mini-icon {
         position: relative;
@@ -1346,7 +1622,7 @@ function renderHtml(): string {
         flex: 1 1 auto;
         min-width: 0;
         height: 100%;
-        padding: 42px 0 72px;
+        padding: 20px 0 62px;
       }
       .micro-kicker,
       .side-title,
@@ -1366,12 +1642,12 @@ function renderHtml(): string {
       }
       .file-workspace {
         position: relative;
-        height: calc(100% - 76px);
+        height: 100%;
         min-height: 390px;
-        margin-top: 31px;
+        margin-top: 0;
         display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 0;
+        grid-template-columns: minmax(0, 1fr) 236px;
+        gap: 22px;
         overflow: hidden;
       }
       .source-field {
@@ -1527,14 +1803,14 @@ function renderHtml(): string {
         min-height: 0;
         display: grid;
         grid-template-rows: auto auto minmax(0, 1fr);
-        gap: 14px;
-        border: 1px solid rgba(237, 230, 218, 0.072);
-        border-radius: 13px;
-        background: rgba(55, 54, 50, 0.28);
-        padding: 15px;
+        gap: 16px;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        padding: 2px 0 0;
         overflow: hidden;
-        backdrop-filter: blur(20px) saturate(1.03);
-        -webkit-backdrop-filter: blur(20px) saturate(1.03);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
       }
       .folder-browser__head {
         min-width: 0;
@@ -1722,12 +1998,13 @@ function renderHtml(): string {
       .folder-items.large {
         display: grid;
         align-content: start;
-        grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
-        gap: 13px;
+        justify-content: start;
+        grid-template-columns: repeat(auto-fill, minmax(118px, 142px));
+        gap: 18px 22px;
       }
       .folder-items.large {
-        grid-template-columns: repeat(auto-fill, minmax(162px, 1fr));
-        gap: 16px;
+        grid-template-columns: repeat(auto-fill, minmax(162px, 184px));
+        gap: 22px 28px;
       }
       .folder-items.list {
         display: grid;
@@ -1769,20 +2046,20 @@ function renderHtml(): string {
       .folder-item:hover,
       .folder-item.selected {
         color: rgba(237, 230, 218, 0.9);
-        background: rgba(237, 230, 218, 0.055);
-        border-color: rgba(237, 230, 218, 0.08);
+        background: rgba(237, 230, 218, 0.036);
+        border-color: transparent;
       }
       .folder-item.source {
         cursor: pointer;
       }
       .folder-item.source[data-source-device="mac-mini"] {
-        border-top-color: rgba(237, 230, 218, 0.22);
+        border-color: transparent;
       }
       .folder-item.source[data-source-device="macbook"] {
-        border-top-color: rgba(208, 194, 170, 0.24);
+        border-color: transparent;
       }
       .folder-item.source[data-source-device="vault"] {
-        border-top-color: rgba(180, 200, 162, 0.2);
+        border-color: transparent;
       }
       .folder-item:active {
         transform: translateY(1px);
@@ -1826,6 +2103,15 @@ function renderHtml(): string {
         border-radius: 5px 5px 0 0;
         background: rgba(237, 230, 218, 0.075);
       }
+      .folder-item.source[data-source-device="mac-mini"] .file-icon.folder {
+        color: rgba(166, 194, 224, 0.86);
+      }
+      .folder-item.source[data-source-device="macbook"] .file-icon.folder {
+        color: rgba(208, 194, 170, 0.9);
+      }
+      .folder-item.source[data-source-device="vault"] .file-icon.folder {
+        color: rgba(180, 200, 162, 0.86);
+      }
       .file-icon.file::before {
         inset: 3px 7px 4px 8px;
         border: 1.5px solid rgba(237, 230, 218, 0.22);
@@ -1841,10 +2127,117 @@ function renderHtml(): string {
         background: rgba(237, 230, 218, 0.16);
       }
       .file-icon.image::before { background: rgba(180, 200, 162, 0.11); }
+      .file-icon.svg::before { background: rgba(166, 194, 224, 0.12); }
       .file-icon.pdf::before { background: rgba(195, 143, 130, 0.12); }
       .file-icon.text::before { background: rgba(208, 194, 170, 0.12); }
+      .file-icon.code::before {
+        background:
+          linear-gradient(90deg, transparent 0 9px, rgba(237, 230, 218, 0.16) 9px 10px, transparent 10px 100%),
+          rgba(166, 194, 224, 0.09);
+      }
+      .file-icon.table::before {
+        background:
+          linear-gradient(rgba(237, 230, 218, 0.13) 0 0) 12px 17px / 19px 1px no-repeat,
+          linear-gradient(rgba(237, 230, 218, 0.13) 0 0) 12px 24px / 19px 1px no-repeat,
+          linear-gradient(90deg, rgba(237, 230, 218, 0.11) 0 1px, transparent 1px 7px) 12px 13px / 7px 18px repeat-x,
+          rgba(180, 200, 162, 0.1);
+      }
+      .file-icon.archive::before { background: rgba(215, 188, 134, 0.1); }
       .file-icon.video::before,
       .file-icon.audio::before { background: rgba(215, 188, 134, 0.11); }
+      .file-icon::before,
+      .file-icon::after {
+        content: none !important;
+        display: none !important;
+      }
+      .file-icon svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+        overflow: visible;
+      }
+      .file-icon .icon-outline,
+      .file-icon .icon-glyph,
+      .file-icon .icon-fold,
+      .file-icon .icon-folder-line {
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        vector-effect: non-scaling-stroke;
+      }
+      .file-icon .icon-outline {
+        stroke-width: 1.55;
+        opacity: 0.82;
+      }
+      .file-icon .icon-glyph {
+        stroke-width: 1.8;
+        opacity: 0.88;
+      }
+      .file-icon .icon-fold,
+      .file-icon .icon-folder-line {
+        stroke-width: 1.4;
+        opacity: 0.42;
+      }
+      .file-icon .icon-page,
+      .file-icon .icon-folder-body,
+      .file-icon .icon-folder-tab {
+        fill: currentColor;
+      }
+      .file-icon .icon-page,
+      .file-icon .icon-folder-body {
+        opacity: 0.115;
+      }
+      .file-icon .icon-folder-tab {
+        opacity: 0.18;
+      }
+      .file-icon .icon-accent {
+        fill: currentColor;
+        opacity: 0.22;
+      }
+      .file-icon.file {
+        color: rgba(218, 211, 199, 0.78);
+      }
+      .file-icon.image {
+        color: rgba(180, 200, 162, 0.92);
+      }
+      .file-icon.svg {
+        color: rgba(166, 194, 224, 0.92);
+      }
+      .file-icon.pdf {
+        color: rgba(211, 142, 124, 0.92);
+      }
+      .file-icon.text {
+        color: rgba(208, 194, 170, 0.92);
+      }
+      .file-icon.code {
+        color: rgba(154, 188, 224, 0.92);
+      }
+      .file-icon.table {
+        color: rgba(163, 198, 162, 0.92);
+      }
+      .file-icon.archive {
+        color: rgba(215, 188, 134, 0.92);
+      }
+      .file-icon.video,
+      .file-icon.audio {
+        color: rgba(209, 169, 130, 0.92);
+      }
+      .file-icon .file-ext {
+        position: absolute;
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        max-width: 31px;
+        color: rgba(237, 230, 218, 0.7);
+        font-size: 8px;
+        line-height: 1;
+        font-weight: 680;
+        letter-spacing: 0;
+        text-transform: uppercase;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .file-ext {
         position: absolute;
         left: 50%;
@@ -1947,6 +2340,40 @@ function renderHtml(): string {
       .folder-items:not(.show-details) .folder-item.list {
         grid-template-columns: 28px minmax(0, 1fr);
       }
+      .vault-sidebar {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        align-content: start;
+        gap: 20px;
+        overflow: auto;
+        padding: 4px 0 18px;
+        border-left: 1px solid rgba(237, 230, 218, 0.065);
+        padding-left: 18px;
+      }
+      .vault-sidebar__section {
+        min-width: 0;
+        display: grid;
+        gap: 10px;
+      }
+      .vault-sidebar__title {
+        margin: 0;
+        color: rgba(237, 230, 218, 0.55);
+        font-size: 10.5px;
+        line-height: 1;
+        font-weight: 560;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+      .vault-sidebar__status {
+        display: grid;
+        gap: 7px;
+      }
+      .vault-sidebar__status span {
+        color: rgba(237, 230, 218, 0.62);
+        font-size: 11px;
+        line-height: 1.3;
+      }
       .folder-empty {
         min-height: 100%;
         display: grid;
@@ -1994,13 +2421,6 @@ function renderHtml(): string {
       }
       .quiet-submit:hover {
         color: rgba(237, 230, 218, 0.84);
-      }
-      .side {
-        flex: 0 0 330px;
-        min-height: 0;
-        display: block;
-        padding: 42px 0 25px;
-        position: relative;
       }
       .system-sections {
         height: 100%;
@@ -2050,33 +2470,6 @@ function renderHtml(): string {
         backdrop-filter: blur(22px) saturate(1.04);
         -webkit-backdrop-filter: blur(22px) saturate(1.04);
       }
-      .tree-section {
-        height: 100%;
-        min-height: 0;
-        display: grid;
-        grid-template-rows: auto auto minmax(0, 1fr);
-        gap: 18px;
-        overflow: hidden;
-        padding-top: 45px;
-      }
-      .selected-source-head {
-        display: grid;
-        gap: 8px;
-      }
-      .selected-source-title {
-        margin: 0;
-        color: rgba(237, 230, 218, 0.9);
-        font-size: 18px;
-        line-height: 1.1;
-        font-weight: 570;
-        overflow-wrap: anywhere;
-      }
-      .selected-source-meta {
-        color: var(--faint);
-        font-size: 11px;
-        line-height: 1.35;
-        overflow-wrap: anywhere;
-      }
       .access-controls {
         display: flex;
         flex-wrap: wrap;
@@ -2095,79 +2488,6 @@ function renderHtml(): string {
       .access-button.active {
         color: rgba(237, 230, 218, 0.84);
         background: rgba(237, 230, 218, 0.075);
-      }
-      .tree-list {
-        min-height: 0;
-        overflow: auto;
-        padding-right: 6px;
-      }
-      .tree-list details {
-        margin: 0;
-        padding-left: 13px;
-        border-left: 1px solid rgba(237, 230, 218, 0.055);
-      }
-      .tree-list summary {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 8px;
-        align-items: center;
-        min-height: 25px;
-        color: rgba(237, 230, 218, 0.68);
-        font-size: 11.5px;
-        cursor: pointer;
-        list-style: none;
-      }
-      .tree-list summary::-webkit-details-marker {
-        display: none;
-      }
-      .tree-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 8px;
-        align-items: center;
-        min-height: 24px;
-        padding-left: 13px;
-        color: rgba(237, 230, 218, 0.52);
-        font-size: 11px;
-      }
-      .tree-row.file-row {
-        grid-template-columns: minmax(0, 1fr) auto auto;
-        cursor: pointer;
-        border-radius: 7px;
-        padding-right: 5px;
-        transition: color 140ms ease, background 140ms ease;
-      }
-      .tree-row.file-row:hover {
-        color: rgba(237, 230, 218, 0.78);
-        background: rgba(237, 230, 218, 0.045);
-      }
-      .tree-name {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .tree-metric {
-        color: var(--faint);
-        font-size: 10px;
-        white-space: nowrap;
-      }
-      .tree-download {
-        border: 0;
-        padding: 0;
-        color: rgba(237, 230, 218, 0.34);
-        background: transparent;
-        cursor: pointer;
-        font-size: 10.5px;
-        opacity: 0;
-        transition: color 140ms ease, opacity 140ms ease;
-      }
-      .tree-row.file-row:hover .tree-download,
-      .tree-download:focus-visible {
-        opacity: 1;
-      }
-      .tree-download:hover {
-        color: rgba(237, 230, 218, 0.86);
       }
       .side-head {
         display: flex;
@@ -2360,6 +2680,15 @@ function renderHtml(): string {
         background: rgba(55, 54, 50, 0.5);
         backdrop-filter: blur(24px);
         -webkit-backdrop-filter: blur(24px);
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+      }
+      .schema-node.dragging {
+        z-index: 4;
+        cursor: grabbing;
+        border-color: rgba(237, 230, 218, 0.23);
+        background: rgba(65, 63, 58, 0.66);
       }
       .schema-node.source-node {
         border-color: rgba(208, 194, 170, 0.18);
@@ -2414,7 +2743,7 @@ function renderHtml(): string {
         body { overflow: auto; }
         .shell {
           min-height: 100svh;
-          padding: 18px 24px 28px 78px;
+          padding: 18px 24px 28px;
         }
         .workspace {
           height: auto;
@@ -2431,21 +2760,22 @@ function renderHtml(): string {
           grid-template-columns: minmax(0, 1fr);
           min-height: 520px;
         }
+        .vault-sidebar {
+          border-left: 0;
+          border-top: 1px solid rgba(237, 230, 218, 0.065);
+          padding: 18px 0 0;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
         .source {
           width: 100%;
         }
       }
       @media (max-width: 760px) {
         .shell {
-          padding: 16px 16px 24px 62px;
-        }
-        .nav-float {
-          left: 15px;
+          padding: 16px;
         }
         .top-actions {
           display: none;
-        }
-        .side {
         }
         .system-sections {
           grid-template-columns: 1fr;
@@ -2455,6 +2785,9 @@ function renderHtml(): string {
           min-height: 0;
           grid-template-columns: 1fr;
           overflow: visible;
+        }
+        .vault-sidebar {
+          grid-template-columns: 1fr;
         }
         .source-field {
           height: auto;
@@ -2487,26 +2820,23 @@ function renderHtml(): string {
   <body>
     <main class="shell">
       <header class="topline">
-        <button class="add-button" id="chooseFolder" title="Add shared folder" aria-label="Add shared folder">+</button>
         <div class="pathline">
           <strong>Agent Vault</strong>
           <span>/</span>
           <span id="connection">loading</span>
         </div>
         <div class="top-actions">
+          <button class="icon-button active" type="button" data-view="vault" title="Files" aria-label="Files"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
+          <button class="icon-button" type="button" data-view="schema" title="Schema" aria-label="Schema"><span class="mini-icon schema-icon" aria-hidden="true"></span></button>
+          <button class="add-button" id="chooseFolder" title="Add shared folder" aria-label="Add shared folder">+</button>
           <button class="text-button" id="refresh">refresh</button>
+          <button class="text-button" id="saveEdits">save edits</button>
           <button class="text-button primary" id="syncAll">sync</button>
         </div>
       </header>
-      <nav class="nav-float" aria-label="Agent Vault views">
-        <button class="icon-button active" data-view="vault" title="Vault" aria-label="Vault"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
-        <button class="icon-button" data-view="schema" title="Schema" aria-label="Schema"><span class="mini-icon schema-icon" aria-hidden="true"></span></button>
-      </nav>
       <section class="workspace" aria-live="polite">
         <section class="view vault-view active" id="view-vault">
           <section class="stage">
-            <p class="micro-kicker">shared sources</p>
-            <div class="stage-meta" id="shareCount">0 sources</div>
             <div class="file-workspace" id="dropSurface">
               <section class="folder-browser" id="folderBrowser" aria-label="Folder contents">
                 <div class="folder-browser__head">
@@ -2534,20 +2864,33 @@ function renderHtml(): string {
                 <div class="folder-browser__crumbs" id="folderCrumbs"></div>
                 <div class="folder-items grid" id="folderItems"></div>
               </section>
+              <aside class="vault-sidebar" id="vaultSidebar" aria-label="Connected devices">
+                <section class="vault-sidebar__section">
+                  <h3 class="vault-sidebar__title">Geräte</h3>
+                  <div id="devices"></div>
+                </section>
+                <section class="vault-sidebar__section">
+                  <h3 class="vault-sidebar__title">Geteilt</h3>
+                  <div class="vault-sidebar__status">
+                    <span id="shareCount">0 shared folders</span>
+                    <span id="pending">0 pending</span>
+                    <span id="deviceScope">local</span>
+                  </div>
+                  <div id="flow"></div>
+                </section>
+                <section class="vault-sidebar__section">
+                  <h3 class="vault-sidebar__title">Edits</h3>
+                  <div id="edits"></div>
+                </section>
+                <div id="structure" class="hidden"></div>
+                <div id="activity" class="hidden"></div>
+              </aside>
             </div>
             <form class="paste-path" id="pathForm">
               <input id="pathInput" placeholder="paste a local folder path" />
               <button class="quiet-submit" type="submit">add</button>
             </form>
           </section>
-          <div class="system-cache hidden" aria-hidden="true">
-            <span id="pending">0 pending</span>
-            <span id="deviceScope">local</span>
-            <div id="devices"></div>
-            <div id="flow"></div>
-            <div id="structure"></div>
-            <div id="activity"></div>
-          </div>
         </section>
         <section class="view schema-view" id="view-schema">
           <header class="schema-head">
@@ -2559,6 +2902,7 @@ function renderHtml(): string {
               <button class="schema-tool" id="zoomOut">-</button>
               <button class="schema-tool" id="zoomReset">100%</button>
               <button class="schema-tool" id="zoomIn">+</button>
+              <button class="schema-tool" id="layoutReset">layout</button>
             </div>
           </header>
           <div class="schema-viewport" id="schemaViewport">
@@ -2583,7 +2927,24 @@ function renderHtml(): string {
         folderEntriesByKey: {},
         folderLoadingByKey: {},
         selectedEntryKey: null,
-        schema: { scale: 1, x: 80, y: 48, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0, hasUserMoved: false },
+        schema: {
+          scale: 1,
+          x: 80,
+          y: 48,
+          dragging: false,
+          startX: 0,
+          startY: 0,
+          originX: 0,
+          originY: 0,
+          hasUserMoved: false,
+          nodePositions: (() => {
+            try { return JSON.parse(localStorage.getItem("agentVault.schema.nodePositions") || "{}"); }
+            catch { return {}; }
+          })(),
+          nodeDrag: null,
+          layoutNodes: [],
+          layoutEdges: []
+        },
         dragDepth: 0
       };
       const $ = (id) => document.getElementById(id);
@@ -2613,7 +2974,8 @@ function renderHtml(): string {
       const scopeLabel = (device) => {
         const scopes = device.scopes || [];
         if (!scopes.length) return "no spaces";
-        return scopes.map((scope) => scope.space + " " + (scope.permissions || []).join("")).join(" / ");
+        if (scopes.length <= 2) return scopes.map((scope) => scope.space).join(" / ");
+        return scopes.length + " spaces";
       };
       const accessLabel = (access) => access === "readonly" ? "read only" : access === "writeonly" ? "write only" : "read + write";
       const accessHint = (access) => access === "readonly"
@@ -2621,12 +2983,27 @@ function renderHtml(): string {
         : access === "writeonly"
           ? "Vault writes into this folder"
           : "Bidirectional sync";
+      const spacePermissions = (spaceName) => {
+        const space = state.summary?.remoteSpaces?.find((item) => item.name === spaceName);
+        return space?.permissions || [];
+      };
+      const sourceCanReceive = (source) => {
+        if (!source) return false;
+        if (source.sourceKind === "local") return source.access === "readwrite" || source.access === "writeonly";
+        return source.access !== "readonly" && spacePermissions(source.space || "").includes("write");
+      };
+      const sourceCanEdit = (source) => {
+        if (!source) return false;
+        if (source.sourceKind === "local") return source.access === "readwrite" || source.access === "readonly";
+        return sourceCanReceive(source);
+      };
       const iconSvg = (name) => {
         if (name === "open") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.5 5.5h9v7h-9z"/><path d="M5 5.5V3.8h3l1.2 1.7"/></svg></span>';
         if (name === "folder") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2.7 5.4h10.6v7.1H2.7z"/><path d="M3.8 5.4V3.8h3l1.1 1.6"/></svg></span>';
         if (name === "sync") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M12.5 5.2A4.7 4.7 0 0 0 4 3.9"/><path d="M4 2.2v1.7h1.7"/><path d="M3.5 10.8a4.7 4.7 0 0 0 8.5 1.3"/><path d="M12 13.8v-1.7h-1.7"/></svg></span>';
         if (name === "remove") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></span>';
         if (name === "download") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 3.2v7.1"/><path d="M5.2 7.6 8 10.4l2.8-2.8"/><path d="M3.6 12.8h8.8"/></svg></span>';
+        if (name === "edit") return '<span class="tiny-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 11.8 4.4 9l5.9-5.9 2.6 2.6L7 11.6z"/><path d="M8.9 4.5l2.6 2.6"/><path d="M3.5 13h8.8"/></svg></span>';
         return "";
       };
       const shortPath = (value) => {
@@ -2641,6 +3018,33 @@ function renderHtml(): string {
       const schemaDefaults = () => window.innerWidth < 760
         ? { scale: 0.72, x: 8, y: 46 }
         : { scale: 1, x: 80, y: 48 };
+      const treeFingerprint = (nodes) => (nodes || []).map((node) =>
+        [node.kind, node.name, node.path, node.count || 0, node.size || 0, treeFingerprint(node.children || [])].join(":")
+      ).join("|");
+      const cloneTreeNode = (node) => ({
+        ...node,
+        children: node.children ? node.children.map(cloneTreeNode) : undefined
+      });
+      const mergeTreeNodes = (primary = [], secondary = []) => {
+        const merged = new Map();
+        for (const node of secondary) merged.set(node.kind + "\\0" + node.path, cloneTreeNode(node));
+        for (const node of primary) {
+          const key = node.kind + "\\0" + node.path;
+          const current = merged.get(key);
+          if (!current) {
+            merged.set(key, cloneTreeNode(node));
+            continue;
+          }
+          merged.set(key, {
+            ...current,
+            ...node,
+            count: Math.max(current.count || 0, node.count || 0),
+            size: Math.max(current.size || 0, node.size || 0),
+            children: mergeTreeNodes(node.children || [], current.children || [])
+          });
+        }
+        return [...merged.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
+      };
 
       const allSources = () => {
         const summary = state.summary;
@@ -2671,7 +3075,7 @@ function renderHtml(): string {
       const sourceVisible = (source) => Boolean(source && (state.deviceFilter === "all" || source.deviceKind === state.deviceFilter));
       const sourceTree = (source) => {
         if (!source) return [];
-        if (source.sourceKind === "local") return source.remoteTree?.length ? source.remoteTree : source.localTree || [];
+        if (source.sourceKind === "local") return mergeTreeNodes(source.localTree || [], source.remoteTree || []);
         return source.tree || [];
       };
       const currentFolder = (source) => source ? (state.folderBySource[source.sourceId] || "") : "";
@@ -2737,9 +3141,13 @@ function renderHtml(): string {
       const fileKind = (node) => {
         if (node.kind === "folder") return "folder";
         const extension = extensionOf(node.name);
-        if (["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"].includes(extension)) return "image";
+        if (extension === "svg") return "svg";
+        if (["png", "jpg", "jpeg", "gif", "webp", "heic"].includes(extension)) return "image";
         if (extension === "pdf") return "pdf";
-        if (["md", "txt", "json", "csv", "ts", "tsx", "js", "jsx", "css", "html", "xml", "yml", "yaml"].includes(extension)) return "text";
+        if (["ts", "tsx", "js", "jsx", "css", "html", "xml", "yml", "yaml", "json", "mjs", "cjs", "swift", "py", "rb", "go", "rs"].includes(extension)) return "code";
+        if (["csv", "tsv", "xlsx", "xls", "numbers"].includes(extension)) return "table";
+        if (["zip", "tar", "gz", "tgz", "rar", "7z"].includes(extension)) return "archive";
+        if (["md", "markdown", "txt", "log"].includes(extension)) return "text";
         if (["mp4", "mov", "webm"].includes(extension)) return "video";
         if (["mp3", "wav", "m4a", "ogg", "aac"].includes(extension)) return "audio";
         return "file";
@@ -2761,6 +3169,25 @@ function renderHtml(): string {
         state.folderEntriesByKey = {};
         state.folderLoadingByKey = {};
       };
+      const summarySourceKey = () => JSON.stringify(allSources().map((source) => ({
+        id: source.sourceId,
+        label: source.label,
+        device: source.deviceKind,
+        files: source.remoteFileCount || source.localFileCount || 0,
+        size: source.remoteSize || source.localSize || 0,
+        tree: treeFingerprint(sourceTree(source))
+      })));
+      const browserStateKey = () => {
+        const source = selectedSource();
+        return JSON.stringify({
+          source: source?.sourceId || "",
+          folder: source ? currentFolder(source) : "",
+          deviceFilter: state.deviceFilter,
+          viewMode: state.viewMode,
+          showDetails: state.showDetails,
+          sources: summarySourceKey()
+        });
+      };
       const mimeTypeForExtension = (extension) => {
         if (["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"].includes(extension)) return "image/" + (extension === "jpg" ? "jpeg" : extension);
         if (extension === "pdf") return "application/pdf";
@@ -2771,10 +3198,11 @@ function renderHtml(): string {
         return "application/octet-stream";
       };
 
-      async function refresh() {
-        const previousIndexedAt = state.summary?.remoteIndexedAt || null;
+      async function refresh(options = {}) {
+        const previousSourceKey = state.summary ? summarySourceKey() : "";
+        const previousBrowserKey = state.summary ? browserStateKey() : "";
         state.summary = await api("/api/summary");
-        if (previousIndexedAt && state.summary.remoteIndexedAt && previousIndexedAt !== state.summary.remoteIndexedAt) {
+        if (previousSourceKey && previousSourceKey !== summarySourceKey()) {
           clearFolderListings();
         }
         if (state.selectedSourceId && !allSources().some((source) => source.sourceId === state.selectedSourceId)) {
@@ -2783,7 +3211,8 @@ function renderHtml(): string {
         if (state.selectedSourceId && !sourceVisible(selectedSource())) {
           state.selectedSourceId = null;
         }
-        render();
+        const skipBrowser = Boolean(options.silent && previousBrowserKey && previousBrowserKey === browserStateKey());
+        render({ skipBrowser });
       }
 
       function setView(view) {
@@ -2794,7 +3223,7 @@ function renderHtml(): string {
         if (view === "schema") renderSchema();
       }
 
-      function render() {
+      function render(options = {}) {
         const summary = state.summary;
         const totalPending = summary.mainPendingActions + summary.shares.reduce((sum, share) => sum + share.pendingActions, 0);
         const serverName = summary.server?.name || "Mac Mini Vault Server";
@@ -2828,6 +3257,15 @@ function renderHtml(): string {
             '<div class="stat-meta">' + stat.events + ' events / ' + fmtSize(stat.bytes) + '</div>' +
           '</div>'
         ).join("");
+        const editSessions = summary.edits?.sessions || [];
+        $("edits").innerHTML = editSessions.length
+          ? editSessions.slice(0, 5).map((session) =>
+              '<div class="activity">' +
+                '<div class="activity-message">' + esc(fileNameOf(session.path)) + '</div>' +
+                '<div class="activity-meta">' + esc(session.status) + ' / v' + esc(session.currentVersion || "-") + ' / ' + esc(shortPath(session.path)) + '</div>' +
+              '</div>'
+            ).join("")
+          : '<div class="empty-note">No open edit copies.</div>';
         const visibleSpaces = summary.remoteSpaces.filter((space) => space.fileCount > 0 || space.name === summary.defaultSpace).slice(0, 4);
         $("structure").innerHTML = visibleSpaces.length ? visibleSpaces.map((space) => {
           const folders = (space.folders.length ? space.folders : [{ path: "/", count: 0, size: 0 }]).slice(0, 5).map((folder) =>
@@ -2855,9 +3293,9 @@ function renderHtml(): string {
           '</div>'
         );
         $("activity").innerHTML = remoteLog.concat(localLog).join("") || '<div class="empty-note">No activity yet.</div>';
-        renderFolderBrowser();
+        if (!options.skipBrowser) renderFolderBrowser();
         renderInspector();
-        renderSchema();
+        if (state.view === "schema" || !options.skipBrowser) renderSchema();
       }
 
       function renderCrumbs(source, folder) {
@@ -2915,17 +3353,47 @@ function renderHtml(): string {
       }
 
       function renderFileIcon(kind, extension) {
-        if (kind === "folder") return '<span class="file-icon folder" aria-hidden="true"></span>';
+        if (kind === "folder") {
+          return '<span class="file-icon folder" aria-hidden="true">' +
+            '<svg viewBox="0 0 64 56" role="img" focusable="false">' +
+              '<path class="icon-folder-tab" d="M10.5 18.5c0-3.3 2.7-6 6-6h10.3c2.1 0 3.7.8 5.1 2.3l3 3.4h12.6c3.6 0 6.5 2.9 6.5 6.5v2.4H10.5v-8.6Z"/>' +
+              '<path class="icon-folder-body" d="M7.5 25.2h49.1v20.1c0 4.1-3.4 7.4-7.5 7.4H14.9c-4.1 0-7.4-3.3-7.4-7.4V25.2Z"/>' +
+              '<path class="icon-outline" fill="none" d="M10.5 25.2v-6.7c0-3.3 2.7-6 6-6h10.3c2.1 0 3.7.8 5.1 2.3l3 3.4h12.6c3.6 0 6.5 2.9 6.5 6.5v20.6c0 4.1-3.4 7.4-7.5 7.4H14.9c-4.1 0-7.4-3.3-7.4-7.4V25.2h49.1"/>' +
+              '<path class="icon-folder-line" fill="none" d="M14.4 30.6h35.2"/>' +
+            '</svg>' +
+          '</span>';
+        }
         const label = extension ? extension.slice(0, 4) : "file";
-        return '<span class="file-icon file ' + esc(kind) + '" aria-hidden="true"><span class="file-ext">' + esc(label) + '</span></span>';
+        const glyphs = {
+          image: '<circle class="icon-accent" cx="44" cy="22" r="4.2"/><path class="icon-glyph" fill="none" d="M19 40.5l8.4-9.2 6.7 6.8 4.8-5.1 7.7 7.5"/>',
+          svg: '<path class="icon-glyph" fill="none" d="M22 34.5 16.8 29l5.2-5.5M42 23.5l5.2 5.5-5.2 5.5M29 37l6-16"/><circle class="icon-accent" cx="32" cy="29" r="2.8"/>',
+          pdf: '<path class="icon-glyph" fill="none" d="M19 36.5h26M19 29.5h26M19 22.5h18"/><text x="21" y="45" fill="currentColor" opacity=".76" font-size="8" font-family="-apple-system, BlinkMacSystemFont, SF Pro Text, sans-serif" font-weight="700">PDF</text>',
+          text: '<path class="icon-glyph" fill="none" d="M19 23h25M19 30h22M19 37h25M19 44h16"/>',
+          code: '<path class="icon-glyph" fill="none" d="m25 24-7 7 7 7M39 24l7 7-7 7M34.5 21.5l-5 19"/>',
+          table: '<path class="icon-glyph" fill="none" d="M18 22.5h28v22H18zM18 29.5h28M18 36.5h28M27.5 22.5v22M37 22.5v22"/>',
+          archive: '<path class="icon-glyph" fill="none" d="M29 20.5v24M34.5 20.5v4M34.5 28.5v4M34.5 36.5v4M24 44.5h16"/>',
+          video: '<path class="icon-glyph" fill="none" d="M18 24.5h24v17H18z"/><path class="icon-accent" d="m29 28.5 9 4.5-9 4.5v-9Z"/>',
+          audio: '<path class="icon-glyph" fill="none" d="M27 39V22l14-3v16"/><circle class="icon-accent" cx="23.5" cy="40.5" r="5"/><circle class="icon-accent" cx="37.5" cy="36.5" r="5"/>',
+          file: '<path class="icon-glyph" fill="none" d="M19 31h18M19 38h22"/>'
+        };
+        return '<span class="file-icon file ' + esc(kind) + '" aria-hidden="true">' +
+          '<svg viewBox="0 0 64 56" role="img" focusable="false">' +
+            '<path class="icon-page" d="M17 5.5h22.8L50 15.7v31.1c0 3.2-2.6 5.7-5.7 5.7H17c-3.2 0-5.7-2.5-5.7-5.7V11.2c0-3.2 2.5-5.7 5.7-5.7Z"/>' +
+            '<path class="icon-outline" fill="none" d="M17 5.5h22.8L50 15.7v31.1c0 3.2-2.6 5.7-5.7 5.7H17c-3.2 0-5.7-2.5-5.7-5.7V11.2c0-3.2 2.5-5.7 5.7-5.7Z"/>' +
+            '<path class="icon-fold" fill="none" d="M39.8 6v8.3c0 1.2 1 2.2 2.2 2.2h7.6"/>' +
+            (glyphs[kind] || glyphs.file) +
+          '</svg>' +
+          '<span class="file-ext">' + esc(label) + '</span>' +
+        '</span>';
       }
 
-      function renderEntryActions(node) {
+      function renderEntryActions(node, source) {
         if (node.kind === "folder") {
           return '<span class="folder-item__actions" aria-hidden="true"></span>';
         }
         return '<span class="folder-item__actions">' +
           '<button class="folder-item__action" type="button" data-file-action="open" title="Open">' + iconSvg("open") + '</button>' +
+          (sourceCanEdit(source) ? '<button class="folder-item__action" type="button" data-file-action="edit" title="Edit and write back">' + iconSvg("edit") + '</button>' : '') +
           '<button class="folder-item__action" type="button" data-file-action="download" title="Download">' + iconSvg("download") + '</button>' +
         '</span>';
       }
@@ -2951,8 +3419,9 @@ function renderHtml(): string {
 
         const folder = currentFolder(source);
         const listingKey = folderListingKey(source, folder);
-        const lazyEntries = state.folderEntriesByKey[listingKey];
-        if (lazyEntries === undefined && !state.folderLoadingByKey[listingKey]) {
+        const shouldUseRemoteListing = source.sourceKind !== "local";
+        const lazyEntries = shouldUseRemoteListing ? state.folderEntriesByKey[listingKey] : undefined;
+        if (shouldUseRemoteListing && lazyEntries === undefined && !state.folderLoadingByKey[listingKey]) {
           void loadFolderEntries(source, folder);
         }
         const entries = (Array.isArray(lazyEntries) ? lazyEntries : folderEntries(source)).slice().sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
@@ -2974,14 +3443,14 @@ function renderHtml(): string {
               const mime = node.kind === "file" ? mimeTypeForExtension(extension) : "";
               const key = source.sourceId + "::" + node.path;
               const selected = state.selectedEntryKey === key;
-              const metric = node.kind === "folder" ? node.count + " items" : fmtSize(node.size);
+              const metric = node.kind === "folder" ? node.count + " items" : fmtSize(node.size) + (node.version ? " / v" + node.version : "");
               const openPath = node.kind === "folder" ? node.path : "";
-              return '<div class="folder-item ' + esc(state.viewMode) + (selected ? " selected" : "") + '" role="button" tabindex="0" draggable="true" data-entry-key="' + esc(key) + '" data-entry-kind="' + esc(node.kind) + '" data-entry-path="' + esc(node.path) + '" data-folder-open="' + esc(openPath) + '" data-file-name="' + esc(node.name) + '" data-file-mime="' + esc(mime) + '" data-file-download-space="' + esc(source.space || "") + '" data-file-download-path="' + esc(remotePath) + '" data-raw-download-url="' + esc(downloadUrl) + '" data-local-open="' + esc(localPath) + '" title="' + esc(node.name) + '">' +
+              return '<div class="folder-item ' + esc(state.viewMode) + (selected ? " selected" : "") + '" role="button" tabindex="0" draggable="true" data-entry-key="' + esc(key) + '" data-entry-kind="' + esc(node.kind) + '" data-entry-path="' + esc(node.path) + '" data-folder-open="' + esc(openPath) + '" data-file-name="' + esc(node.name) + '" data-file-mime="' + esc(mime) + '" data-file-version="' + esc(node.version || "") + '" data-file-hash="' + esc(node.sha256 || "") + '" data-file-updated="' + esc(node.updatedAt || "") + '" data-file-download-space="' + esc(source.space || "") + '" data-file-download-path="' + esc(remotePath) + '" data-raw-download-url="' + esc(downloadUrl) + '" data-local-open="' + esc(localPath) + '" title="' + esc(node.name) + '">' +
                 renderFileIcon(kind, extension) +
                 '<span class="folder-item__name">' + esc(node.name) + '</span>' +
                 '<span class="folder-item__kind">' + esc(kindLabel(node)) + '</span>' +
                 '<span class="folder-item__meta">' + esc(metric) + '</span>' +
-                renderEntryActions(node) +
+                renderEntryActions(node, source) +
               '</div>';
             }).join("")
           : '<div class="folder-empty">' + (loading ? "Loading folder..." : "This folder is empty.") + '</div>';
@@ -3007,7 +3476,8 @@ function renderHtml(): string {
         }
 
         const localPath = entryNode.dataset.localOpen || "";
-        if (localPath && action === "open") {
+        const shouldEdit = action === "edit" || (action === "open" && sourceCanEdit(source) && !localPath);
+        if (localPath && (action === "open" || action === "edit")) {
           await api("/api/open-folder", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -3019,7 +3489,22 @@ function renderHtml(): string {
 
         const remotePath = entryNode.dataset.fileDownloadPath || "";
         if (!remotePath) return;
-        toast(action === "open" ? "Opening file" : "Downloading file");
+        if (shouldEdit) {
+          toast("Opening editable copy");
+          const result = await api("/api/edit-remote", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              space: entryNode.dataset.fileDownloadSpace,
+              path: remotePath
+            })
+          });
+          await refresh();
+          toast("Editing " + shortPath(result.edit?.targetPath || remotePath));
+          return;
+        }
+
+        toast(action === "open" ? "Opening file copy" : "Downloading file");
         const result = await api("/api/download-remote", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -3037,6 +3522,7 @@ function renderHtml(): string {
       function remotePathForNode(source, nodePath) {
         const prefix = String(source?.remotePathPrefix || "").replace(/^\/+|\/+$/g, "");
         const cleanPath = String(nodePath || "").replace(/^\/+/, "");
+        if (!cleanPath) return prefix;
         return prefix ? prefix + "/" + cleanPath : cleanPath;
       }
 
@@ -3056,6 +3542,7 @@ function renderHtml(): string {
           '</div>' +
           '<div class="empty-note">' + esc(message || "Status unavailable.") + '</div>';
         $("flow").innerHTML = "";
+        $("edits").innerHTML = '<div class="empty-note">No edit status while reconnecting.</div>';
         $("structure").innerHTML = '<div class="empty-note">Waiting for Vault status.</div>';
         $("activity").innerHTML = '<div class="empty-note">No live log while reconnecting.</div>';
         $("folderTitle").textContent = "Geteilte Ordner";
@@ -3064,8 +3551,39 @@ function renderHtml(): string {
         $("folderItems").innerHTML = '<div class="folder-empty">' + esc(message || "Status unavailable.") + '</div>';
       }
 
+      const schemaNodeSize = { width: 188, height: 86 };
+      function schemaNodePosition(id, x, y) {
+        const stored = state.schema.nodePositions?.[id];
+        if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y)) return stored;
+        return { x, y };
+      }
+      function schemaNodeCenter(node) {
+        const position = schemaNodePosition(node.id, node.x, node.y);
+        return {
+          x: position.x + schemaNodeSize.width / 2,
+          y: position.y + schemaNodeSize.height / 2
+        };
+      }
+      function schemaCurve(fromId, toId) {
+        const nodes = new Map((state.schema.layoutNodes || []).map((node) => [node.id, node]));
+        const from = nodes.get(fromId);
+        const to = nodes.get(toId);
+        if (!from || !to) return "";
+        const start = schemaNodeCenter(from);
+        const end = schemaNodeCenter(to);
+        const bend = Math.max(38, Math.abs(end.x - start.x) * 0.42);
+        return '<path class="schema-line" d="M' + start.x.toFixed(1) + ' ' + start.y.toFixed(1) + ' C' + (start.x + bend).toFixed(1) + ' ' + start.y.toFixed(1) + ' ' + (end.x - bend).toFixed(1) + ' ' + end.y.toFixed(1) + ' ' + end.x.toFixed(1) + ' ' + end.y.toFixed(1) + '" />';
+      }
+      function renderSchemaLines() {
+        $("schemaLines").innerHTML = (state.schema.layoutEdges || []).map((edge) => schemaCurve(edge[0], edge[1])).join("");
+      }
+      function saveSchemaNodePositions() {
+        try { localStorage.setItem("agentVault.schema.nodePositions", JSON.stringify(state.schema.nodePositions || {})); }
+        catch {}
+      }
       function schemaNode(id, kind, title, meta, x, y, extra = "") {
-        return '<div class="schema-node ' + extra + '" id="' + esc(id) + '" style="left:' + x + 'px;top:' + y + 'px">' +
+        const position = schemaNodePosition(id, x, y);
+        return '<div class="schema-node ' + extra + '" id="' + esc(id) + '" data-schema-node="' + esc(id) + '" data-default-x="' + x + '" data-default-y="' + y + '" style="left:' + position.x + 'px;top:' + position.y + 'px">' +
           '<div class="node-kind">' + esc(kind) + '</div>' +
           '<div class="node-title">' + esc(title) + '</div>' +
           '<div class="node-meta">' + esc(meta) + '</div>' +
@@ -3078,27 +3596,32 @@ function renderHtml(): string {
         const defaultSpace = summary.remoteSpaces.find((space) => space.name === summary.defaultSpace) || summary.remoteSpaces[0];
         const shares = summary.shares.slice(0, 5);
         const nodeHtml = [];
-        const lines = [];
+        const layoutNodes = [];
+        const layoutEdges = [];
         const currentDevice = summary.devices.find((device) => device.current || device.id === summary.currentDeviceId);
-        nodeHtml.push(schemaNode("node-device", "device", currentDevice?.name || "This Mac", summary.syncFolder, 76, 230));
-        nodeHtml.push(schemaNode("node-server", "server", summary.server.name, "private Tailnet Vault", 360, 230));
-        nodeHtml.push(schemaNode("node-space", "vault space", summary.defaultSpace, defaultSpace ? fileLabel(defaultSpace.fileCount) + " / " + fmtSize(defaultSpace.size) : "0 files", 590, 230));
-        nodeHtml.push(schemaNode("node-drops", "quick drop", "Desktop Drops", "window-wide drop target", 718, 92));
-        nodeHtml.push(schemaNode("node-log", "audit", "Activity Log", summary.recentChanges.length + " remote events", 718, 374));
-        lines.push('<path class="schema-line" d="M264 273 C314 273 320 273 360 273" />');
-        lines.push('<path class="schema-line" d="M548 273 C566 273 572 273 590 273" />');
-        lines.push('<path class="schema-line" d="M778 252 C790 202 766 150 718 135" />');
-        lines.push('<path class="schema-line" d="M778 294 C798 324 770 382 718 418" />');
+        const addNode = (id, kind, title, meta, x, y, extra = "") => {
+          layoutNodes.push({ id, x, y });
+          nodeHtml.push(schemaNode(id, kind, title, meta, x, y, extra));
+        };
+        addNode("node-device", "device", currentDevice?.name || "This Mac", summary.syncFolder, 74, 244);
+        addNode("node-server", "server", summary.server.name, "private Tailnet Vault", 344, 244);
+        addNode("node-space", "vault space", summary.defaultSpace, defaultSpace ? fileLabel(defaultSpace.fileCount) + " / " + fmtSize(defaultSpace.size) : "0 files", 596, 244);
+        addNode("node-drops", "quick drop", "Desktop Drops", "window-wide drop target", 734, 82);
+        addNode("node-log", "audit", "Activity Log", summary.recentChanges.length + " remote events", 734, 406);
+        layoutEdges.push(["node-device", "node-server"]);
+        layoutEdges.push(["node-server", "node-space"]);
+        layoutEdges.push(["node-space", "node-drops"]);
+        layoutEdges.push(["node-space", "node-log"]);
         shares.forEach((share, index) => {
-          const x = index % 2 === 0 ? 74 : 190;
-          const y = 38 + index * 90;
+          const x = index % 2 === 0 ? 58 : 188;
+          const y = 36 + index * 84;
           const id = "node-share-" + index;
-          nodeHtml.push(schemaNode(id, "source", share.label, shortPath(share.localDir), x, y, "source-node"));
-          const startX = x + 188;
-          const startY = y + 43;
-          lines.push('<path class="schema-line" d="M' + startX + ' ' + startY + ' C316 ' + startY + ' 324 273 360 273" />');
+          addNode(id, "source", share.label, shortPath(share.localDir), x, y, "source-node");
+          layoutEdges.push([id, "node-server"]);
         });
-        $("schemaLines").innerHTML = lines.join("");
+        state.schema.layoutNodes = layoutNodes;
+        state.schema.layoutEdges = layoutEdges;
+        renderSchemaLines();
         $("schemaNodes").innerHTML = nodeHtml.join("");
         if (!state.schema.hasUserMoved) {
           Object.assign(state.schema, schemaDefaults());
@@ -3122,9 +3645,28 @@ function renderHtml(): string {
         toast("Shared folder added");
         await refresh();
       }
+      function currentUploadTarget() {
+        const source = selectedSource();
+        if (source && sourceCanReceive(source)) {
+          return {
+            space: source.space || state.summary.defaultSpace,
+            pathPrefix: remotePathForNode(source, currentFolder(source)),
+            writable: true
+          };
+        }
+        return {
+          space: state.summary.defaultSpace,
+          pathPrefix: "Desktop Drops",
+          writable: false
+        };
+      }
+      window.__agentVaultCurrentDropTarget = currentUploadTarget;
       async function uploadFile(file, relativePath) {
-        const target = "Desktop Drops/" + relativePath.replace(/^\/+/, "");
-        await api("/api/drop?space=" + encodeURIComponent(state.summary.defaultSpace) + "&path=" + encodeURIComponent(target), {
+        const target = currentUploadTarget();
+        const base = String(target.pathPrefix || "Desktop Drops").replace(/^\/+|\/+$/g, "");
+        const cleanRelative = String(relativePath || file.name || "drop.bin").replace(/^\/+/, "");
+        const filePath = (base ? base + "/" : "") + cleanRelative;
+        await api("/api/drop?space=" + encodeURIComponent(target.space) + "&path=" + encodeURIComponent(filePath), {
           method: "POST",
           body: file
         });
@@ -3164,10 +3706,11 @@ function renderHtml(): string {
         const localPaths = droppedLocalPaths(event);
         if (localPaths.length) {
           toast("Adding dropped paths");
+          const target = currentUploadTarget();
           await api("/api/ingest-paths", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ paths: localPaths })
+            body: JSON.stringify({ paths: localPaths, target })
           });
           clearFolderListings();
           await refresh();
@@ -3200,6 +3743,18 @@ function renderHtml(): string {
         clearFolderListings();
         await refresh();
         toast("Sync complete");
+      });
+      $("saveEdits").addEventListener("click", async () => {
+        toast("Saving edits");
+        const result = await api("/api/writeback-edits", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+        clearFolderListings();
+        await refresh();
+        const writeback = result.writeback || {};
+        toast((writeback.uploaded || 0) + " saved / " + (writeback.conflicts || 0) + " conflicts");
       });
       $("refresh").addEventListener("click", refresh);
       $("pathForm").addEventListener("submit", async (event) => {
@@ -3411,12 +3966,10 @@ function renderHtml(): string {
         if (!entryNode?.dataset?.entryPath) return;
         const source = selectedSource();
         const label = source ? (source.label + "/" + entryNode.dataset.entryPath) : entryNode.dataset.entryPath;
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
         event.dataTransfer?.setData("text/plain", label);
         if (entryNode.dataset.entryKind === "file") {
-          const localPath = entryNode.dataset.localOpen || "";
-          if (localPath) {
-            event.dataTransfer?.setData("text/uri-list", fileUrlForLocalPath(localPath));
-          } else if (entryNode.dataset.rawDownloadUrl) {
+          if (entryNode.dataset.rawDownloadUrl) {
             const mime = entryNode.dataset.fileMime || "application/octet-stream";
             const name = entryNode.dataset.fileName || "agent-vault-file";
             event.dataTransfer?.setData("DownloadURL", mime + ":" + name + ":" + entryNode.dataset.rawDownloadUrl);
@@ -3432,6 +3985,7 @@ function renderHtml(): string {
       });
       document.addEventListener("dragover", (event) => {
         event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
       });
       document.addEventListener("dragleave", () => {
         state.dragDepth = Math.max(0, state.dragDepth - 1);
@@ -3457,6 +4011,55 @@ function renderHtml(): string {
         state.schema = { ...state.schema, ...schemaDefaults(), hasUserMoved: false };
         updateSchemaTransform();
       });
+      $("layoutReset").addEventListener("click", () => {
+        state.schema.nodePositions = {};
+        saveSchemaNodePositions();
+        renderSchema();
+      });
+      $("schemaNodes").addEventListener("pointerdown", (event) => {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        const node = target?.closest?.("[data-schema-node]");
+        if (!node?.dataset?.schemaNode) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const id = node.dataset.schemaNode;
+        const defaultX = Number(node.dataset.defaultX || 0);
+        const defaultY = Number(node.dataset.defaultY || 0);
+        const position = schemaNodePosition(id, defaultX, defaultY);
+        state.schema.hasUserMoved = true;
+        state.schema.nodeDrag = {
+          id,
+          node,
+          startX: event.clientX,
+          startY: event.clientY,
+          originX: position.x,
+          originY: position.y
+        };
+        node.classList.add("dragging");
+        node.setPointerCapture(event.pointerId);
+      });
+      $("schemaNodes").addEventListener("pointermove", (event) => {
+        const drag = state.schema.nodeDrag;
+        if (!drag) return;
+        const node = drag.node;
+        if (!(node instanceof HTMLElement)) return;
+        const next = {
+          x: drag.originX + (event.clientX - drag.startX) / state.schema.scale,
+          y: drag.originY + (event.clientY - drag.startY) / state.schema.scale
+        };
+        state.schema.nodePositions[drag.id] = next;
+        node.style.left = next.x + "px";
+        node.style.top = next.y + "px";
+        renderSchemaLines();
+      });
+      const endSchemaNodeDrag = () => {
+        if (!state.schema.nodeDrag) return;
+        document.querySelectorAll(".schema-node.dragging").forEach((node) => node.classList.remove("dragging"));
+        state.schema.nodeDrag = null;
+        saveSchemaNodePositions();
+      };
+      $("schemaNodes").addEventListener("pointerup", endSchemaNodeDrag);
+      $("schemaNodes").addEventListener("pointercancel", endSchemaNodeDrag);
       $("schemaViewport").addEventListener("wheel", (event) => {
         event.preventDefault();
         state.schema.hasUserMoved = true;
@@ -3471,6 +4074,8 @@ function renderHtml(): string {
         updateSchemaTransform();
       }, { passive: false });
       $("schemaViewport").addEventListener("pointerdown", (event) => {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        if (target?.closest?.("[data-schema-node]")) return;
         state.schema.hasUserMoved = true;
         state.schema.dragging = true;
         state.schema.startX = event.clientX;
@@ -3497,7 +4102,7 @@ function renderHtml(): string {
         toast(error.message);
       });
       window.setInterval(() => {
-        refresh().catch((error) => renderOffline(error.message));
+        refresh({ silent: true }).catch((error) => renderOffline(error.message));
       }, 8000);
     </script>
   </body>
