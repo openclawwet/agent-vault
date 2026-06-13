@@ -22,12 +22,26 @@ export interface SyncState {
   files: Record<string, SyncStateEntry>;
 }
 
+interface ScanCacheEntry {
+  hash: string;
+  mtimeMs: number;
+  size: number;
+}
+
+interface ScanCache {
+  files: Record<string, ScanCacheEntry>;
+}
+
 export function metadataDir(localDir: string): string {
   return path.join(localDir, ".agent-vault");
 }
 
 export function statePath(localDir: string): string {
   return path.join(metadataDir(localDir), "state.json");
+}
+
+function scanCachePath(localDir: string): string {
+  return path.join(metadataDir(localDir), "scan-cache.json");
 }
 
 export async function readState(localDir: string): Promise<SyncState> {
@@ -46,6 +60,24 @@ export async function readState(localDir: string): Promise<SyncState> {
 export async function writeState(localDir: string, state: SyncState): Promise<void> {
   await mkdir(metadataDir(localDir), { recursive: true });
   await writeFile(statePath(localDir), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+}
+
+async function readScanCache(localDir: string): Promise<ScanCache> {
+  try {
+    const body = await readFile(scanCachePath(localDir), "utf8");
+    const parsed = JSON.parse(body) as Partial<ScanCache>;
+    return { files: parsed.files && typeof parsed.files === "object" ? parsed.files : {} };
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+    return { files: {} };
+  }
+}
+
+async function writeScanCache(localDir: string, cache: ScanCache): Promise<void> {
+  await mkdir(metadataDir(localDir), { recursive: true });
+  await writeFile(scanCachePath(localDir), `${JSON.stringify(cache)}\n`, { mode: 0o600 });
 }
 
 export async function hashFile(filePath: string): Promise<string> {
@@ -73,6 +105,8 @@ function isIgnored(relativePath: string, name: string, options: LocalScanOptions
 export async function scanLocal(localDir: string, options: LocalScanOptions = {}): Promise<LocalFileEntry[]> {
   const root = path.resolve(localDir);
   const results: LocalFileEntry[] = [];
+  const previousCache = await readScanCache(root);
+  const nextCache: ScanCache = { files: {} };
 
   async function walk(current: string): Promise<void> {
     const entries = await readdir(current, { withFileTypes: true });
@@ -90,9 +124,15 @@ export async function scanLocal(localDir: string, options: LocalScanOptions = {}
         continue;
       }
       const fileStat = await stat(absolute);
+      const cached = previousCache.files[relative];
+      const hash =
+        cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs
+          ? cached.hash
+          : await hashFile(absolute);
+      nextCache.files[relative] = { hash, size: fileStat.size, mtimeMs: fileStat.mtimeMs };
       results.push({
         path: relative,
-        hash: await hashFile(absolute),
+        hash,
         size: fileStat.size,
       });
     }
@@ -100,6 +140,7 @@ export async function scanLocal(localDir: string, options: LocalScanOptions = {}
 
   await mkdir(root, { recursive: true });
   await walk(root);
+  await writeScanCache(root, nextCache);
   return results.sort((a, b) => a.path.localeCompare(b.path));
 }
 

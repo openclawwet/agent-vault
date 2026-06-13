@@ -74,8 +74,8 @@ async function exists(targetPath: string): Promise<boolean> {
 }
 
 export async function watchAllSources(config: MacSyncConfig, options: WatchAllSourcesOptions = {}): Promise<void> {
-  const debounceMs = options.debounceMs ?? 550;
-  const pollMs = options.pollMs ?? 20_000;
+  const debounceMs = options.debounceMs ?? 2_500;
+  const pollMs = options.pollMs ?? 300_000;
   let running = false;
   let queued = false;
   let closed = false;

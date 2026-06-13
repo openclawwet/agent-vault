@@ -1,7 +1,8 @@
 import { execFile, spawn } from "node:child_process";
+import { watch, type FSWatcher } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ChangeEventRecord, DeviceStatusRecord, SpaceAccessInfo, VaultFileRecord, VaultServerStatus } from "@agent-vault/core";
@@ -182,7 +183,7 @@ async function scanLocalForUi(localDir: string, options: LocalScanOptions = {}):
   return results.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-async function summarizeShare(config: MacSyncConfig, share: ShareRecord, options: { checkPending?: boolean } = {}) {
+async function summarizeShareUncached(config: MacSyncConfig, share: ShareRecord, options: { checkPending?: boolean } = {}) {
   try {
     const files = await scanLocalForUi(share.localDir, { ignoreNames: share.ignoreNames, ignorePathPrefixes: share.ignorePathPrefixes });
     const status = options.checkPending ? await shareStatus(config, share) : { actions: [] };
@@ -208,6 +209,64 @@ async function summarizeShare(config: MacSyncConfig, share: ShareRecord, options
       error: error instanceof Error ? error.message : "Share is unavailable.",
     };
   }
+}
+
+type ShareSummary = Awaited<ReturnType<typeof summarizeShareUncached>>;
+
+const LOCAL_SUMMARY_TTL_MS = Number.parseInt(process.env.AGENT_VAULT_LOCAL_SUMMARY_TTL_MS ?? "120000", 10);
+const localShareSummaryCache = new Map<string, { expiresAt: number; summary: ShareSummary }>();
+
+function shareSummaryCacheKey(share: ShareRecord): string {
+  return JSON.stringify({
+    id: share.id,
+    localDir: share.localDir,
+    ignoreNames: share.ignoreNames,
+    ignorePathPrefixes: share.ignorePathPrefixes,
+    enabled: share.enabled,
+    access: share.access,
+  });
+}
+
+function cachedShareSummary(share: ShareRecord): ShareSummary | undefined {
+  const cached = localShareSummaryCache.get(shareSummaryCacheKey(share));
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.summary;
+  }
+  return undefined;
+}
+
+function lightShareSummary(share: ShareRecord): ShareSummary {
+  return (
+    cachedShareSummary(share) ?? {
+      ...share,
+      localFileCount: 0,
+      localSize: 0,
+      localTree: [],
+      pendingActions: 0,
+      pendingChecked: false,
+      available: true,
+    }
+  );
+}
+
+async function summarizeShare(config: MacSyncConfig, share: ShareRecord, options: { checkPending?: boolean; localDetail?: boolean } = {}) {
+  if (options.localDetail === false) {
+    return lightShareSummary(share);
+  }
+
+  const key = shareSummaryCacheKey(share);
+  if (!options.checkPending) {
+    const cached = localShareSummaryCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.summary;
+    }
+  }
+
+  const summary = await summarizeShareUncached(config, share, options);
+  if (!options.checkPending) {
+    localShareSummaryCache.set(key, { expiresAt: Date.now() + Math.max(10_000, LOCAL_SUMMARY_TTL_MS), summary });
+  }
+  return summary;
 }
 
 function folderTree(files: VaultFileRecord[]): Array<{ path: string; count: number; size: number }> {
@@ -570,7 +629,7 @@ interface RemoteSnapshot {
 
 let remoteSnapshot: RemoteSnapshot | null = null;
 let remoteRefresh: Promise<RemoteSnapshot> | null = null;
-const REMOTE_SNAPSHOT_TTL_MS = 60_000;
+const REMOTE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.AGENT_VAULT_REMOTE_SNAPSHOT_TTL_MS ?? "300000", 10);
 
 function placeholderRemoteSpaces(spaces: SpaceAccessInfo[]): RemoteSpaceSummary[] {
   return spaces.map((space) => ({
@@ -654,7 +713,15 @@ function getRemoteSnapshot(vault: VaultClient, spaces: SpaceAccessInfo[], wait: 
   return remoteSnapshot;
 }
 
-async function buildSummary(config: MacSyncConfig, options: { waitForRemote?: boolean; checkPending?: boolean } = {}) {
+function clearSummaryCaches(): void {
+  remoteSnapshot = null;
+  localShareSummaryCache.clear();
+}
+
+async function buildSummary(
+  config: MacSyncConfig,
+  options: { waitForRemote?: boolean; checkPending?: boolean; localDetail?: boolean } = {},
+) {
   const vault = new VaultClient(config.serverUrl, config.token);
   const shareConfig = await loadShareConfig();
   const mainConfig = configWithShareIgnores(config, shareConfig.shares);
@@ -685,7 +752,11 @@ async function buildSummary(config: MacSyncConfig, options: { waitForRemote?: bo
     editStatus().catch(() => ({ sessions: [], openCount: 0, conflictCount: 0 })),
   ]);
   const spaces = spacesResult.spaces;
-  const localShares = await Promise.all(shareConfig.shares.map((share) => summarizeShare(config, share, { checkPending: options.checkPending })));
+  const localShares = await Promise.all(
+    shareConfig.shares.map((share) =>
+      summarizeShare(config, share, { checkPending: options.checkPending, localDetail: options.localDetail }),
+    ),
+  );
   const snapshotResult = getRemoteSnapshot(vault, spaces, Boolean(options.waitForRemote));
   const snapshot = snapshotResult instanceof Promise ? await snapshotResult : snapshotResult;
   const remoteSpaces = snapshot?.spaces ?? placeholderRemoteSpaces(spaces);
@@ -739,7 +810,7 @@ async function buildSummary(config: MacSyncConfig, options: { waitForRemote?: bo
 
 async function syncAll(config: MacSyncConfig) {
   const result = await syncAllSources(config);
-  remoteSnapshot = null;
+  clearSummaryCaches();
   await recordActivity("sync", "Synced Agent Vault desktop sources", {
     main: result.main,
     total: result.total,
@@ -870,7 +941,6 @@ async function downloadRemoteFile(config: MacSyncConfig, input: Record<string, u
   } else if (input.reveal !== false) {
     revealPath(targetPath);
   }
-  remoteSnapshot = null;
   await recordActivity("file_download", `Downloaded ${filePath}`, {
     space,
     path: filePath,
@@ -983,7 +1053,7 @@ async function writeBackEditedFiles(config: MacSyncConfig, input: Record<string,
       };
       nextSessions.push(updated);
       results.push({ id: session.id, path: session.path, status: "uploaded" });
-      remoteSnapshot = null;
+      clearSummaryCaches();
       await recordActivity("file_writeback", `Wrote back edited file ${session.path}`, {
         space: session.space,
         path: session.path,
@@ -1028,7 +1098,7 @@ async function createFolderMarker(config: MacSyncConfig, share: ShareRecord, fol
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   });
   const synced = await syncShare(config, share);
-  remoteSnapshot = null;
+  clearSummaryCaches();
   await recordActivity("sync", `Created shared folder ${share.label}/${folder}`, {
     share: share.label,
     folder,
@@ -1062,7 +1132,7 @@ async function uploadLocalFileToVault(config: MacSyncConfig, localPath: string, 
     body,
     `${config.deviceId}:${target.space}:native-drop:${filePath}:${sha256BufferLocal(body)}`,
   );
-  remoteSnapshot = null;
+  clearSummaryCaches();
   await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space: target.space, path: filePath, size: body.byteLength });
   return { kind: "file", file: uploaded };
 }
@@ -1095,17 +1165,29 @@ async function ingestLocalPath(config: MacSyncConfig, inputPath: string, target:
 
 function startUiAutoSync(config: MacSyncConfig): () => void {
   let running = false;
+  let queued = false;
   let closed = false;
-  const intervalMs = Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_MS ?? "20000", 10);
+  let timer: NodeJS.Timeout | undefined;
+  let pollTimer: NodeJS.Timeout | undefined;
+  let watcherRefreshTimer: NodeJS.Timeout | undefined;
+  let watchers: FSWatcher[] = [];
+  let watchedKeys = "";
+  const intervalMs = Math.max(60_000, Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_MS ?? "300000", 10));
+  const debounceMs = Math.max(750, Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_DEBOUNCE_MS ?? "2500", 10));
+  const startupDelayMs = Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_STARTUP_MS ?? "15000", 10);
 
   async function run(reason: string): Promise<void> {
-    if (running || closed) return;
+    if (closed) return;
+    if (running) {
+      queued = true;
+      return;
+    }
     running = true;
     try {
       await writeBackEditedFiles(config, {});
       const result = await syncAllSources(config);
       if (summaryChanged(result.total)) {
-        remoteSnapshot = null;
+        clearSummaryCaches();
         await recordActivity("sync", `Auto-synced Agent Vault sources (${reason})`, {
           total: result.total,
           shares: result.shares.map((share) => ({ label: share.label, summary: share.summary })),
@@ -1117,14 +1199,77 @@ function startUiAutoSync(config: MacSyncConfig): () => void {
       });
     } finally {
       running = false;
+      if (queued && !closed) {
+        queued = false;
+        schedule("queued");
+      }
     }
   }
 
-  const timer = setInterval(() => void run("ui"), Math.max(5000, intervalMs));
-  void run("ui startup");
+  function schedule(reason: string): void {
+    if (closed) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void run(reason), debounceMs);
+  }
+
+  async function exists(targetPath: string): Promise<boolean> {
+    try {
+      await access(targetPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function refreshWatchers(): Promise<void> {
+    const shareConfig = await loadShareConfig();
+    const dirs = [config.localDir, ...shareConfig.shares.filter((share) => share.enabled).map((share) => share.localDir)];
+    const uniqueDirs = [...new Set(dirs)].sort();
+    const nextKeys = uniqueDirs.join("\n");
+    if (nextKeys === watchedKeys) {
+      return;
+    }
+
+    for (const watcher of watchers) {
+      watcher.close();
+    }
+    watchers = [];
+    watchedKeys = nextKeys;
+
+    for (const dir of uniqueDirs) {
+      if (!(await exists(dir))) {
+        continue;
+      }
+      try {
+        watchers.push(watch(dir, { recursive: true }, () => schedule("local change")));
+      } catch (error: unknown) {
+        await recordActivity("error", "Could not watch Agent Vault source", {
+          folder: dir,
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+  }
+
+  void refreshWatchers();
+  if (startupDelayMs >= 0) {
+    timer = setTimeout(() => void run("startup"), startupDelayMs);
+  }
+  pollTimer = setInterval(() => {
+    void refreshWatchers().then(() => schedule("remote poll"));
+  }, intervalMs);
+  watcherRefreshTimer = setInterval(() => {
+    void refreshWatchers();
+  }, 60_000);
+
   return () => {
     closed = true;
-    clearInterval(timer);
+    if (timer) clearTimeout(timer);
+    if (pollTimer) clearInterval(pollTimer);
+    if (watcherRefreshTimer) clearInterval(watcherRefreshTimer);
+    for (const watcher of watchers) {
+      watcher.close();
+    }
   };
 }
 
@@ -1133,7 +1278,15 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
   const route = segments(url);
 
   if (method === "GET" && route.join("/") === "api/summary") {
-    sendJson(res, 200, await buildSummary(config, { waitForRemote: url.searchParams.get("full") === "1", checkPending: url.searchParams.get("pending") === "1" }));
+    sendJson(
+      res,
+      200,
+      await buildSummary(config, {
+        waitForRemote: url.searchParams.get("full") === "1",
+        checkPending: url.searchParams.get("pending") === "1",
+        localDetail: url.searchParams.get("light") !== "1",
+      }),
+    );
     return;
   }
 
@@ -1229,7 +1382,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       ignorePathPrefixes: Array.isArray(body.ignorePathPrefixes) ? body.ignorePathPrefixes.map((item) => String(item)) : undefined,
     });
     const initialSync = await syncShare(config, share);
-    remoteSnapshot = null;
+    clearSummaryCaches();
     await recordActivity("share_added", `Added shared folder ${share.label}`, {
       localDir: share.localDir,
       space: share.space,
@@ -1252,6 +1405,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       access: share.access,
       enabled: share.enabled,
     });
+    clearSummaryCaches();
     sendJson(res, 200, { share });
     return;
   }
@@ -1262,6 +1416,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       throw new UiError(404, "share_not_found", "Shared folder was not found.");
     }
     await recordActivity("share_removed", "Removed shared folder", { id: route[2] });
+    clearSummaryCaches();
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -1273,7 +1428,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       throw new UiError(404, "share_not_found", "Shared folder was not found.");
     }
     const result = await syncShare(config, share);
-    remoteSnapshot = null;
+    clearSummaryCaches();
     await recordActivity("sync", `Synced shared folder ${share.label}`, {
       label: share.label,
       summary: result.summary,
@@ -1307,7 +1462,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       body,
       `${config.deviceId}:${space}:desktop-drop:${filePath}:${randomUUID()}`,
     );
-    remoteSnapshot = null;
+    clearSummaryCaches();
     await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space, path: filePath, size: body.byteLength });
     sendJson(res, 201, { file: uploaded });
     return;
@@ -1324,7 +1479,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
     for (const localPath of paths) {
       results.push(await ingestLocalPath(config, localPath, target));
     }
-    remoteSnapshot = null;
+    clearSummaryCaches();
     sendJson(res, 201, { results });
     return;
   }
@@ -2918,6 +3073,7 @@ function renderHtml(): string {
     <script>
       const state = {
         summary: null,
+        paused: false,
         view: "vault",
         selectedSourceId: null,
         viewMode: "grid",
@@ -3199,6 +3355,7 @@ function renderHtml(): string {
       };
 
       async function refresh(options = {}) {
+        if (state.paused && options.silent) return;
         const previousSourceKey = state.summary ? summarySourceKey() : "";
         const previousBrowserKey = state.summary ? browserStateKey() : "";
         state.summary = await api("/api/summary");
@@ -3214,6 +3371,17 @@ function renderHtml(): string {
         const skipBrowser = Boolean(options.silent && previousBrowserKey && previousBrowserKey === browserStateKey());
         render({ skipBrowser });
       }
+
+      window.__agentVaultSetPaused = (paused) => {
+        state.paused = Boolean(paused);
+        if (!state.paused) {
+          refresh({ silent: true }).catch((error) => renderOffline(error.message));
+        }
+      };
+
+      document.addEventListener("visibilitychange", () => {
+        state.paused = document.hidden;
+      });
 
       function setView(view) {
         state.view = view;
@@ -4102,8 +4270,9 @@ function renderHtml(): string {
         toast(error.message);
       });
       window.setInterval(() => {
+        if (state.paused) return;
         refresh({ silent: true }).catch((error) => renderOffline(error.message));
-      }, 8000);
+      }, 30000);
     </script>
   </body>
 </html>`;

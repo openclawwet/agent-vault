@@ -130,11 +130,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        webView?.evaluateJavaScript("window.__agentVaultSetPaused && window.__agentVaultSetPaused(true)", completionHandler: nil)
         sender.orderOut(nil)
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
+        webView?.evaluateJavaScript("window.__agentVaultSetPaused && window.__agentVaultSetPaused(true)", completionHandler: nil)
         window?.orderOut(nil)
     }
 
@@ -317,13 +319,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func startSummaryPolling() {
         summaryTimer?.invalidate()
         pollSummary()
-        summaryTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        summaryTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.pollSummary()
         }
     }
 
     private func pollSummary() {
-        guard let url = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/summary") else { return }
+        guard let summaryUrl = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/summary"),
+              var components = URLComponents(url: summaryUrl, resolvingAgainstBaseURL: false) else { return }
+        components.queryItems = [URLQueryItem(name: "light", value: "1")]
+        guard let url = components.url else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 guard error == nil, let data else {
@@ -420,6 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let url = desktopUrl {
             webView?.load(URLRequest(url: url))
         }
+        webView?.evaluateJavaScript("window.__agentVaultSetPaused && window.__agentVaultSetPaused(false)", completionHandler: nil)
     }
 
     @objc private func refreshStatus(_ sender: Any?) {
