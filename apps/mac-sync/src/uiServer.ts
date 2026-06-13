@@ -1143,7 +1143,7 @@ async function uploadLocalFileToVault(config: MacSyncConfig, localPath: string, 
   );
   clearSummaryCaches();
   await recordActivity("drop_upload", `Uploaded drop ${filePath}`, { space: target.space, path: filePath, size: body.byteLength });
-  return { kind: "file", file: uploaded };
+  return { kind: "file", target, file: uploaded };
 }
 
 async function ingestLocalPath(config: MacSyncConfig, inputPath: string, target: { space: string; pathPrefix: string }) {
@@ -1162,7 +1162,7 @@ async function ingestLocalPath(config: MacSyncConfig, inputPath: string, target:
       remotePathPrefix: share.remotePathPrefix,
       initialSync: initialSync.summary,
     });
-    return { kind: "share", share, initialSync };
+    return { kind: "share", target: { space: share.space, pathPrefix: share.remotePathPrefix }, share, initialSync };
   }
 
   if (!localStat.isFile()) {
@@ -1500,7 +1500,7 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       results.push(await ingestLocalPath(config, localPath, target));
     }
     clearSummaryCaches();
-    sendJson(res, 201, { results });
+    sendJson(res, 201, { target, results });
     return;
   }
 
@@ -3384,6 +3384,7 @@ function renderHtml(): string {
         const previousSourceKey = state.summary ? summarySourceKey() : "";
         const previousBrowserKey = state.summary ? browserStateKey() : "";
         const params = new URLSearchParams();
+        if (options.full) params.set("full", "1");
         if (options.refreshRemote) params.set("remote", "1");
         state.summary = await api("/api/summary" + (params.size ? "?" + params.toString() : ""));
         if (previousSourceKey && previousSourceKey !== summarySourceKey()) {
@@ -3856,10 +3857,39 @@ function renderHtml(): string {
         return {
           space: state.summary.defaultSpace,
           pathPrefix: "Desktop Drops",
-          writable: false
+          writable: true,
+          fallback: true
         };
       }
       window.__agentVaultCurrentDropTarget = currentUploadTarget;
+      function matchingSourceForTarget(target) {
+        if (!target) return null;
+        const space = String(target.space || state.summary?.defaultSpace || "");
+        const prefix = String(target.pathPrefix || "").replace(/^\/+|\/+$/g, "");
+        const candidates = allSources()
+          .filter((source) => String(source.space || "") === space)
+          .filter((source) => {
+            const sourcePrefix = String(source.remotePathPrefix || "").replace(/^\/+|\/+$/g, "");
+            return sourcePrefix && (prefix === sourcePrefix || prefix.startsWith(sourcePrefix + "/"));
+          })
+          .sort((a, b) => String(b.remotePathPrefix || "").length - String(a.remotePathPrefix || "").length);
+        return candidates[0] || null;
+      }
+      function selectDropTarget(target) {
+        const source = matchingSourceForTarget(target);
+        if (!source) return false;
+        const prefix = String(source.remotePathPrefix || "").replace(/^\/+|\/+$/g, "");
+        const targetPrefix = String(target.pathPrefix || "").replace(/^\/+|\/+$/g, "");
+        const folder = targetPrefix === prefix ? "" : targetPrefix.slice(prefix.length + 1);
+        state.deviceFilter = source.deviceKind || "all";
+        state.selectedSourceId = source.sourceId;
+        setCurrentFolder(source, folder);
+        return true;
+      }
+      async function refreshAfterDrop(target) {
+        await refresh({ refreshRemote: true, full: true });
+        if (selectDropTarget(target)) renderFolderBrowser();
+      }
       async function uploadFile(file, relativePath) {
         const target = currentUploadTarget();
         const base = String(target.pathPrefix || "Desktop Drops").replace(/^\/+|\/+$/g, "");
@@ -3906,13 +3936,13 @@ function renderHtml(): string {
         if (localPaths.length) {
           toast("Adding dropped paths");
           const target = currentUploadTarget();
-          await api("/api/ingest-paths", {
+          const result = await api("/api/ingest-paths", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ paths: localPaths, target })
           });
           clearFolderListings();
-          await refresh({ refreshRemote: true });
+          await refreshAfterDrop(result.target || target);
           toast("Drop complete");
           return;
         }
@@ -3932,7 +3962,7 @@ function renderHtml(): string {
           await uploadFile(item.file, item.path);
         }
         clearFolderListings();
-        await refresh({ refreshRemote: true });
+        await refreshAfterDrop(currentUploadTarget());
         toast("Drop upload complete");
       }
 
@@ -4202,6 +4232,30 @@ function renderHtml(): string {
         if (state.dragDepth === 0) document.body.classList.remove("dragging");
       });
       document.addEventListener("drop", handleDrop);
+      window.__agentVaultNativeDropState = (active) => {
+        if (active) {
+          document.body.classList.add("dragging");
+        } else {
+          state.dragDepth = 0;
+          document.body.classList.remove("dragging");
+        }
+      };
+      window.__agentVaultNativeDropStarted = (count) => {
+        state.dragDepth = 0;
+        document.body.classList.remove("dragging");
+        toast("Uploading " + (Number(count) || 1) + " dropped item" + ((Number(count) || 1) === 1 ? "" : "s"));
+      };
+      window.__agentVaultNativeDropComplete = async (result) => {
+        clearFolderListings();
+        const target = result?.target || result?.results?.find?.((item) => item?.target)?.target || currentUploadTarget();
+        await refreshAfterDrop(target);
+        toast("Drop complete");
+      };
+      window.__agentVaultNativeDropFailed = (message) => {
+        state.dragDepth = 0;
+        document.body.classList.remove("dragging");
+        toast(message || "Drop failed");
+      };
       window.__agentVaultNativeRefresh = async (message) => {
         await refresh({ refreshRemote: true });
         toast(message || "Updated");

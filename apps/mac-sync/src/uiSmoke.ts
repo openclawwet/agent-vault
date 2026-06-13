@@ -79,6 +79,8 @@ try {
   assert(html.includes("/api/writeback-edits"), "desktop UI HTML missing writeback flow");
   assert(html.includes("/api/preferences"), "desktop UI HTML missing preferences flow");
   assert(html.includes("__agentVaultCurrentDropTarget"), "desktop UI HTML missing contextual drop target");
+  assert(html.includes("__agentVaultNativeDropComplete"), "desktop UI HTML missing native drop completion handler");
+  assert(html.includes("refreshAfterDrop"), "desktop UI HTML missing post-drop target selection");
   assert(html.includes('effectAllowed = "copy"'), "desktop UI HTML missing copy-safe drag-out");
   assert(!html.includes('run("startup")'), "desktop UI should not schedule startup sync");
   assert(!html.includes("remote poll"), "desktop UI should not schedule remote poll sync");
@@ -196,6 +198,27 @@ try {
   assert(
     targetedListed?.some((file) => file.path === "Client Docs/Research Notes/drop-note.txt"),
     "targeted dropped file was not uploaded into the open folder path",
+  );
+
+  const rootDropFile = path.join(tempRoot, "root-drop.zip");
+  await writeFile(rootDropFile, "root drop archive\n");
+  const rootIngest = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/ingest-paths`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths: [rootDropFile] }),
+  });
+  assert(rootIngest.status === 201, `root file ingest failed with ${rootIngest.status}`);
+  const rootIngestJson = await expectJson(rootIngest);
+  const rootTarget = rootIngestJson.target as { pathPrefix?: string } | undefined;
+  assert(rootTarget?.pathPrefix === "Desktop Drops", "root file drops should route to Desktop Drops");
+  const rootDropFiles = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/files`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const rootDropJson = await expectJson(rootDropFiles);
+  const rootDropListed = rootDropJson.files as Array<{ path: string }> | undefined;
+  assert(
+    rootDropListed?.some((file) => file.path === "Desktop Drops/root-drop.zip"),
+    "root dropped file was not uploaded into visible Desktop Drops",
   );
 
   const edit = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/edit-remote`, {

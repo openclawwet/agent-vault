@@ -50,8 +50,21 @@ private struct VaultFlow: Decodable {
 }
 
 final class DragHandleView: NSView {
+    var onLocalFileDrop: (([URL]) -> Void)?
+    var onDragState: ((Bool) -> Void)?
+
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, alphaValue > 0.01, bounds.contains(point) else { return nil }
@@ -68,10 +81,38 @@ final class DragHandleView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.performDrag(with: event)
     }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        onDragState?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDragState?(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDragState?(false)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDragState?(false)
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+              !urls.isEmpty else {
+            return false
+        }
+        onLocalFileDrop?(urls)
+        return true
+    }
 }
 
 final class DropWebView: WKWebView {
     var onLocalFileDrop: (([URL]) -> Void)?
+    var onDragState: ((Bool) -> Void)?
 
     override init(frame: NSRect, configuration: WKWebViewConfiguration) {
         super.init(frame: frame, configuration: configuration)
@@ -84,14 +125,24 @@ final class DropWebView: WKWebView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        .copy
+        onDragState?(true)
+        return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         .copy
     }
 
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDragState?(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDragState?(false)
+    }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDragState?(false)
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
               !urls.isEmpty else {
             return false
@@ -170,6 +221,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         webView.onLocalFileDrop = { [weak self] urls in
             self?.handleDroppedUrls(urls)
         }
+        webView.onDragState = { [weak self] active in
+            self?.setNativeDropActive(active)
+        }
         webView.loadHTMLString(loadingHtml("Starting Agent Vault"), baseURL: nil)
 
         let window = NSWindow(
@@ -199,6 +253,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dragHandle.translatesAutoresizingMaskIntoConstraints = false
         dragHandle.wantsLayer = true
         dragHandle.layer?.backgroundColor = NSColor.clear.cgColor
+        dragHandle.onLocalFileDrop = { [weak self] urls in
+            self?.handleDroppedUrls(urls)
+        }
+        dragHandle.onDragState = { [weak self] active in
+            self?.setNativeDropActive(active)
+        }
         materialView.addSubview(dragHandle)
 
         NSLayoutConstraint.activate([
@@ -480,10 +540,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }.resume()
     }
 
+    private func setNativeDropActive(_ active: Bool) {
+        let state = active ? "true" : "false"
+        webView?.evaluateJavaScript("window.__agentVaultNativeDropState && window.__agentVaultNativeDropState(\(state))", completionHandler: nil)
+    }
+
+    private func jsString(_ value: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: value, options: [])
+        return data.flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+    }
+
     private func handleDroppedUrls(_ urls: [URL]) {
         let paths = urls.map { $0.path }.filter { !$0.isEmpty }
         guard !paths.isEmpty else { return }
 
+        webView?.evaluateJavaScript("window.__agentVaultNativeDropStarted && window.__agentVaultNativeDropStarted(\(paths.count))", completionHandler: nil)
         webView?.evaluateJavaScript("window.__agentVaultCurrentDropTarget ? window.__agentVaultCurrentDropTarget() : null") { [weak self] result, _ in
             self?.postDroppedPaths(paths, target: result as? [String: Any])
         }
@@ -501,10 +572,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload, options: [])
 
-        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
+                if let error {
+                    self?.webView?.evaluateJavaScript("window.__agentVaultNativeDropFailed && window.__agentVaultNativeDropFailed(\(self?.jsString(error.localizedDescription) ?? "\"Drop failed\""))", completionHandler: nil)
+                    return
+                }
+                let http = response as? HTTPURLResponse
+                guard (200...299).contains(http?.statusCode ?? 0) else {
+                    var message = "Drop failed"
+                    if let data,
+                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let error = json["error"] as? [String: Any],
+                       let errorMessage = error["message"] as? String {
+                        message = errorMessage
+                    }
+                    self?.webView?.evaluateJavaScript("window.__agentVaultNativeDropFailed && window.__agentVaultNativeDropFailed(\(self?.jsString(message) ?? "\"Drop failed\""))", completionHandler: nil)
+                    return
+                }
                 self?.pollSummary()
-                self?.webView?.evaluateJavaScript("window.__agentVaultNativeRefresh && window.__agentVaultNativeRefresh('Drop complete')", completionHandler: nil)
+                if let data, let text = String(data: data, encoding: .utf8) {
+                    self?.webView?.evaluateJavaScript("window.__agentVaultNativeDropComplete && window.__agentVaultNativeDropComplete(\(text))", completionHandler: nil)
+                } else {
+                    self?.webView?.evaluateJavaScript("window.__agentVaultNativeDropComplete && window.__agentVaultNativeDropComplete(null)", completionHandler: nil)
+                }
             }
         }.resume()
     }
