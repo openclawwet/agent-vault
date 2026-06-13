@@ -1914,6 +1914,16 @@ function renderHtml(): string {
         min-width: 0;
         height: calc(100svh - 86px);
         margin-top: 21px;
+        padding-left: 54px;
+      }
+      .view-rail {
+        position: absolute;
+        z-index: 7;
+        left: 34px;
+        top: 76px;
+        display: grid;
+        gap: 8px;
+        -webkit-app-region: no-drag;
       }
       .view {
         height: 100%;
@@ -2657,8 +2667,6 @@ function renderHtml(): string {
         gap: 20px;
         overflow: auto;
         padding: 4px 0 18px;
-        border-left: 1px solid rgba(237, 230, 218, 0.065);
-        padding-left: 18px;
       }
       .vault-sidebar__section {
         min-width: 0;
@@ -3057,6 +3065,7 @@ function renderHtml(): string {
         .workspace {
           height: auto;
           min-height: calc(100svh - 78px);
+          padding-left: 48px;
         }
         .vault-view {
           flex-direction: column;
@@ -3070,7 +3079,6 @@ function renderHtml(): string {
           min-height: 520px;
         }
         .vault-sidebar {
-          border-left: 0;
           border-top: 1px solid rgba(237, 230, 218, 0.065);
           padding: 18px 0 0;
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3085,6 +3093,13 @@ function renderHtml(): string {
         }
         .top-actions {
           display: none;
+        }
+        .view-rail {
+          left: 16px;
+          top: 64px;
+        }
+        .workspace {
+          padding-left: 44px;
         }
         .system-sections {
           grid-template-columns: 1fr;
@@ -3135,8 +3150,6 @@ function renderHtml(): string {
           <span id="connection">loading</span>
         </div>
         <div class="top-actions">
-          <button class="icon-button active" type="button" data-view="vault" title="Files" aria-label="Files"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
-          <button class="icon-button" type="button" data-view="schema" title="Schema" aria-label="Schema"><span class="mini-icon schema-icon" aria-hidden="true"></span></button>
           <button class="add-button" id="chooseFolder" title="Add shared folder" aria-label="Add shared folder">+</button>
           <button class="text-button" id="refresh">refresh</button>
           <button class="text-button" id="saveEdits">save edits</button>
@@ -3144,6 +3157,10 @@ function renderHtml(): string {
           <button class="text-button primary" id="syncAll">sync</button>
         </div>
       </header>
+      <nav class="view-rail" aria-label="Views">
+        <button class="icon-button active" type="button" data-view="vault" title="Files" aria-label="Files"><span class="mini-icon vault-icon" aria-hidden="true"></span></button>
+        <button class="icon-button" type="button" data-view="schema" title="Schema" aria-label="Schema"><span class="mini-icon schema-icon" aria-hidden="true"></span></button>
+      </nav>
       <section class="workspace" aria-live="polite">
         <section class="view vault-view active" id="view-vault">
           <section class="stage">

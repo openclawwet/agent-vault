@@ -4,7 +4,20 @@ Agent Vault is a private macOS file-sharing system for Nils' own devices first: 
 
 The repo contains the server, sync client, native macOS app wrapper, phone PWA, backup/restore scripts, runbook, package lockfile and install scripts. It does not contain live device tokens, the local Vault database, synced files, generated DMGs, packaged tarballs or `node_modules`.
 
-## GitHub install
+## Normal Mac install
+
+Agent Vault does not use an Agent Vault cloud account. It never asks for an email/password. The Mac app connects to Nils' Mac Mini over the private Tailscale URL and uses a scoped device token stored locally during setup.
+
+Install the released macOS app:
+
+1. Download `Agent-Vault.dmg` from the latest GitHub release.
+2. Open the DMG.
+3. Drag `Agent Vault.app` into `Applications`.
+4. Open `Agent Vault.app`.
+
+The app bundle includes the runtime it needs for the desktop client. Node.js is not required on the MacBook for the normal DMG install.
+
+## Source install
 
 Fresh clone on macOS:
 
@@ -14,7 +27,7 @@ cd agent-vault
 scripts/install-macos.sh client
 ```
 
-That installs dependencies with the pinned pnpm version, builds the TypeScript packages, builds and ad-hoc signs `Agent Vault.app`, creates the private DMG/client package, installs the app into `/Applications` when possible, and initializes the MacBook client against the private Vault URL. If no token asset is available, it asks for the MacBook device token without echoing it.
+That developer path installs dependencies with the pinned pnpm version, builds the TypeScript packages, builds and ad-hoc signs `Agent Vault.app`, creates the private DMG/client package, installs the app into `/Applications` when possible, and initializes the MacBook client against the private Vault URL. If no token asset is available, it asks for the MacBook device token without echoing it. This path may require GitHub authentication when the repo is private; it is not the normal MacBook install path.
 
 For an explicit server or token:
 

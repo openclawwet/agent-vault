@@ -9,6 +9,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const appRoot = path.join(repoRoot, "apps/mac-sync/native/build/Agent Vault.app");
 const sourceOutput = path.join(repoRoot, "apps/web/public/install/Agent-Vault.dmg");
 const liveOutput = path.join(repoRoot, "apps/web/dist/install/Agent-Vault.dmg");
+const codesignIdentity = process.env.AGENT_VAULT_CODESIGN_IDENTITY;
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
@@ -51,6 +52,9 @@ try {
     "UDZO",
     sourceOutput,
   ]);
+  if (codesignIdentity) {
+    await run("/usr/bin/codesign", ["--force", "--sign", codesignIdentity, sourceOutput]);
+  }
 
   try {
     await mkdir(path.dirname(liveOutput), { recursive: true });

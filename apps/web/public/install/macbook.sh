@@ -20,9 +20,8 @@ need_command() {
 
 need_command curl
 need_command tar
-need_command node
 
-NODE_BIN="$(command -v node)"
+NODE_BIN="$(command -v node 2>/dev/null || true)"
 
 if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" ]]; then
   echo "Unsafe install directory." >&2
@@ -36,7 +35,9 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$INSTALL_DIR")" "$SYNC_DIR" "$HOME/.agent-vault/bin"
-printf '%s\n' "$NODE_BIN" >"$HOME/.agent-vault/node-bin"
+if [[ -n "$NODE_BIN" ]]; then
+  printf '%s\n' "$NODE_BIN" >"$HOME/.agent-vault/node-bin"
+fi
 
 echo "Installing Agent Vault MacBook client from private Vault URL..."
 curl -fsSL "$PACKAGE_URL" -o "$TMP_DIR/client.tar.gz"
@@ -85,6 +86,10 @@ fi
 cat >"$INSTALL_DIR/bin/agent-vault-sync" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
+APP_SYNC_BIN="$APP_TARGET/Contents/Resources/bin/agent-vault-sync"
+if [[ -x "\$APP_SYNC_BIN" ]]; then
+  exec "\$APP_SYNC_BIN" "\$@"
+fi
 NODE_BIN="$NODE_BIN"
 SOURCE="\${BASH_SOURCE[0]}"
 while [[ -L "\$SOURCE" ]]; do
@@ -95,10 +100,19 @@ while [[ -L "\$SOURCE" ]]; do
   fi
 done
 ROOT_DIR="\$(cd -P "\$(dirname "\$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+if [[ -z "\$NODE_BIN" ]]; then
+  echo "Agent Vault CLI needs the installed app bundle or Node.js. Reinstall Agent Vault from the latest DMG." >&2
+  exit 127
+fi
 exec "\$NODE_BIN" "\$ROOT_DIR/apps/mac-sync/dist/cli.js" "\$@"
 SCRIPT
 chmod +x "$INSTALL_DIR/bin/agent-vault-sync"
 ln -sfn "$INSTALL_DIR/bin/agent-vault-sync" "$HOME/.agent-vault/bin/agent-vault-sync"
+
+SYNC_BIN="$INSTALL_DIR/bin/agent-vault-sync"
+if [[ -x "$APP_TARGET/Contents/Resources/bin/agent-vault-sync" ]]; then
+  SYNC_BIN="$APP_TARGET/Contents/Resources/bin/agent-vault-sync"
+fi
 
 TOKEN="${AGENT_VAULT_TOKEN:-}"
 if [[ -z "$TOKEN" ]]; then
@@ -116,13 +130,13 @@ if [[ -z "$TOKEN" ]]; then
   exit 1
 fi
 
-"$INSTALL_DIR/bin/agent-vault-sync" init \
+"$SYNC_BIN" init \
   --server "$SERVER_URL" \
   --token "$TOKEN" \
   --dir "$SYNC_DIR" \
   --space "$SYNC_SPACE" >/dev/null
 
-"$INSTALL_DIR/bin/agent-vault-sync" install-login-agent --app "$APP_TARGET" >/dev/null || true
+"$SYNC_BIN" install-login-agent --app "$APP_TARGET" >/dev/null || true
 
 curl -fsSL "$SERVER_URL/health" >/dev/null
 
