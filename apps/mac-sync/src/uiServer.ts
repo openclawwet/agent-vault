@@ -10,6 +10,7 @@ import type { MacSyncConfig } from "./config.js";
 import { configWithShareIgnores, syncAllSources, summaryChanged } from "./autoSync.js";
 import { readActivity, recordActivity } from "./activityLog.js";
 import type { LocalScanOptions } from "./localState.js";
+import { loadPreferences, updatePreferences } from "./preferences.js";
 import { addShare, loadShareConfig, normalizeShareAccess, removeShare, updateShare, type ShareRecord } from "./shareConfig.js";
 import { shareStatus, syncShare } from "./shareSync.js";
 import { statusCommand } from "./syncCommands.js";
@@ -684,7 +685,12 @@ async function buildRemoteSnapshot(vault: VaultClient, spaces: SpaceAccessInfo[]
   return { spaces: remoteSpaces, remoteFiles, recentChanges, indexedAt: new Date().toISOString() };
 }
 
-function getRemoteSnapshot(vault: VaultClient, spaces: SpaceAccessInfo[], wait: boolean): RemoteSnapshot | Promise<RemoteSnapshot> | null {
+function getRemoteSnapshot(
+  vault: VaultClient,
+  spaces: SpaceAccessInfo[],
+  wait: boolean,
+  refresh: boolean,
+): RemoteSnapshot | Promise<RemoteSnapshot> | null {
   if (wait) {
     remoteRefresh ??= buildRemoteSnapshot(vault, spaces)
       .then((snapshot) => {
@@ -699,7 +705,7 @@ function getRemoteSnapshot(vault: VaultClient, spaces: SpaceAccessInfo[], wait: 
 
   const snapshotAge = remoteSnapshot ? Date.now() - new Date(remoteSnapshot.indexedAt).getTime() : Number.POSITIVE_INFINITY;
   const stale = !remoteSnapshot || snapshotAge > REMOTE_SNAPSHOT_TTL_MS;
-  if (stale && !remoteRefresh) {
+  if (refresh && stale && !remoteRefresh) {
     remoteRefresh = buildRemoteSnapshot(vault, spaces)
       .then((snapshot) => {
         remoteSnapshot = snapshot;
@@ -720,10 +726,11 @@ function clearSummaryCaches(): void {
 
 async function buildSummary(
   config: MacSyncConfig,
-  options: { waitForRemote?: boolean; checkPending?: boolean; localDetail?: boolean } = {},
+  options: { waitForRemote?: boolean; refreshRemote?: boolean; checkPending?: boolean; localDetail?: boolean } = {},
 ) {
   const vault = new VaultClient(config.serverUrl, config.token);
   const shareConfig = await loadShareConfig();
+  const preferences = await loadPreferences();
   const mainConfig = configWithShareIgnores(config, shareConfig.shares);
   const fallbackSpace: SpaceAccessInfo = {
     name: config.space,
@@ -757,7 +764,7 @@ async function buildSummary(
       summarizeShare(config, share, { checkPending: options.checkPending, localDetail: options.localDetail }),
     ),
   );
-  const snapshotResult = getRemoteSnapshot(vault, spaces, Boolean(options.waitForRemote));
+  const snapshotResult = getRemoteSnapshot(vault, spaces, Boolean(options.waitForRemote), Boolean(options.refreshRemote));
   const snapshot = snapshotResult instanceof Promise ? await snapshotResult : snapshotResult;
   const remoteSpaces = snapshot?.spaces ?? placeholderRemoteSpaces(spaces);
   const remoteFiles = snapshot?.remoteFiles ?? [];
@@ -788,6 +795,8 @@ async function buildSummary(
     serverUrl: config.serverUrl,
     syncFolder: config.localDir,
     defaultSpace: config.space,
+    preferences,
+    autoSyncEnabled: preferences.autoSyncEnabled,
     mainPendingActions: "actions" in mainStatus ? changedCount(mainStatus.actions) : 0,
     mainStatusError: "error" in mainStatus ? mainStatus.error : null,
     shares,
@@ -1168,13 +1177,10 @@ function startUiAutoSync(config: MacSyncConfig): () => void {
   let queued = false;
   let closed = false;
   let timer: NodeJS.Timeout | undefined;
-  let pollTimer: NodeJS.Timeout | undefined;
   let watcherRefreshTimer: NodeJS.Timeout | undefined;
   let watchers: FSWatcher[] = [];
   let watchedKeys = "";
-  const intervalMs = Math.max(60_000, Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_MS ?? "300000", 10));
   const debounceMs = Math.max(750, Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_DEBOUNCE_MS ?? "2500", 10));
-  const startupDelayMs = Number.parseInt(process.env.AGENT_VAULT_UI_AUTOSYNC_STARTUP_MS ?? "15000", 10);
 
   async function run(reason: string): Promise<void> {
     if (closed) return;
@@ -1184,7 +1190,10 @@ function startUiAutoSync(config: MacSyncConfig): () => void {
     }
     running = true;
     try {
-      await writeBackEditedFiles(config, {});
+      const preferences = await loadPreferences();
+      if (!preferences.autoSyncEnabled) {
+        return;
+      }
       const result = await syncAllSources(config);
       if (summaryChanged(result.total)) {
         clearSummaryCaches();
@@ -1252,12 +1261,6 @@ function startUiAutoSync(config: MacSyncConfig): () => void {
   }
 
   void refreshWatchers();
-  if (startupDelayMs >= 0) {
-    timer = setTimeout(() => void run("startup"), startupDelayMs);
-  }
-  pollTimer = setInterval(() => {
-    void refreshWatchers().then(() => schedule("remote poll"));
-  }, intervalMs);
   watcherRefreshTimer = setInterval(() => {
     void refreshWatchers();
   }, 60_000);
@@ -1265,7 +1268,6 @@ function startUiAutoSync(config: MacSyncConfig): () => void {
   return () => {
     closed = true;
     if (timer) clearTimeout(timer);
-    if (pollTimer) clearInterval(pollTimer);
     if (watcherRefreshTimer) clearInterval(watcherRefreshTimer);
     for (const watcher of watchers) {
       watcher.close();
@@ -1283,10 +1285,28 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       200,
       await buildSummary(config, {
         waitForRemote: url.searchParams.get("full") === "1",
+        refreshRemote: url.searchParams.get("remote") === "1" || url.searchParams.get("full") === "1",
         checkPending: url.searchParams.get("pending") === "1",
         localDetail: url.searchParams.get("light") !== "1",
       }),
     );
+    return;
+  }
+
+  if (method === "GET" && route.join("/") === "api/preferences") {
+    sendJson(res, 200, { preferences: await loadPreferences() });
+    return;
+  }
+
+  if (method === "PATCH" && route.join("/") === "api/preferences") {
+    const body = await readJson(req);
+    const preferences = await updatePreferences({
+      autoSyncEnabled: typeof body.autoSyncEnabled === "boolean" ? body.autoSyncEnabled : undefined,
+    });
+    await recordActivity("settings", preferences.autoSyncEnabled ? "Auto-sync enabled" : "Auto-sync disabled", {
+      autoSyncEnabled: preferences.autoSyncEnabled,
+    });
+    sendJson(res, 200, { preferences });
     return;
   }
 
@@ -1701,6 +1721,10 @@ function renderHtml(): string {
         color: rgba(237, 230, 218, 0.84);
         background: rgba(237, 230, 218, 0.09);
         border-color: rgba(237, 230, 218, 0.11);
+      }
+      .text-button.active {
+        color: rgba(237, 230, 218, 0.82);
+        border-color: rgba(237, 230, 218, 0.09);
       }
       .icon-button {
         width: 34px;
@@ -2986,6 +3010,7 @@ function renderHtml(): string {
           <button class="add-button" id="chooseFolder" title="Add shared folder" aria-label="Add shared folder">+</button>
           <button class="text-button" id="refresh">refresh</button>
           <button class="text-button" id="saveEdits">save edits</button>
+          <button class="text-button" id="autoSyncToggle" type="button" aria-pressed="true">auto on</button>
           <button class="text-button primary" id="syncAll">sync</button>
         </div>
       </header>
@@ -3358,7 +3383,9 @@ function renderHtml(): string {
         if (state.paused && options.silent) return;
         const previousSourceKey = state.summary ? summarySourceKey() : "";
         const previousBrowserKey = state.summary ? browserStateKey() : "";
-        state.summary = await api("/api/summary");
+        const params = new URLSearchParams();
+        if (options.refreshRemote) params.set("remote", "1");
+        state.summary = await api("/api/summary" + (params.size ? "?" + params.toString() : ""));
         if (previousSourceKey && previousSourceKey !== summarySourceKey()) {
           clearFolderListings();
         }
@@ -3396,12 +3423,16 @@ function renderHtml(): string {
         const totalPending = summary.mainPendingActions + summary.shares.reduce((sum, share) => sum + share.pendingActions, 0);
         const serverName = summary.server?.name || "Mac Mini Vault Server";
         const serverStatus = summary.server?.status || "online";
-        $("connection").textContent = serverName + " / " + summary.defaultSpace + " / autosync";
+        const autoText = summary.autoSyncEnabled ? "auto events on" : "manual sync";
+        $("connection").textContent = serverName + " / " + summary.defaultSpace + " / " + autoText;
         $("pending").textContent = summary.remoteIndexing ? "indexing" : totalPending + " pending";
         $("deviceScope").textContent = summary.devicesPresenceVisible ? "presence" : "local";
         const sources = allSources();
         const visible = visibleSources();
-        $("shareCount").textContent = sources.length + (sources.length === 1 ? " shared folder" : " shared folders") + (summary.remoteIndexing ? " / indexing vault" : " / autosync on") + (visible.length !== sources.length ? " / filtered " + visible.length : "");
+        $("shareCount").textContent = sources.length + (sources.length === 1 ? " shared folder" : " shared folders") + (summary.remoteIndexing ? " / indexing vault" : " / " + autoText) + (visible.length !== sources.length ? " / filtered " + visible.length : "");
+        $("autoSyncToggle").textContent = summary.autoSyncEnabled ? "auto on" : "auto off";
+        $("autoSyncToggle").classList.toggle("active", Boolean(summary.autoSyncEnabled));
+        $("autoSyncToggle").setAttribute("aria-pressed", summary.autoSyncEnabled ? "true" : "false");
         const serverRow = '<div class="device server-device">' +
           '<div class="device-name"><span class="device-status"><span class="status-dot ' + esc(serverStatus) + '"></span>' + esc(serverName) + '</span></div>' +
           '<div class="device-meta">server</div>' +
@@ -3811,7 +3842,7 @@ function renderHtml(): string {
         });
         clearFolderListings();
         toast("Shared folder added");
-        await refresh();
+        await refresh({ refreshRemote: true });
       }
       function currentUploadTarget() {
         const source = selectedSource();
@@ -3881,7 +3912,7 @@ function renderHtml(): string {
             body: JSON.stringify({ paths: localPaths, target })
           });
           clearFolderListings();
-          await refresh();
+          await refresh({ refreshRemote: true });
           toast("Drop complete");
           return;
         }
@@ -3901,7 +3932,7 @@ function renderHtml(): string {
           await uploadFile(item.file, item.path);
         }
         clearFolderListings();
-        await refresh();
+        await refresh({ refreshRemote: true });
         toast("Drop upload complete");
       }
 
@@ -3909,7 +3940,7 @@ function renderHtml(): string {
         toast("Sync running");
         await api("/api/sync", { method: "POST" });
         clearFolderListings();
-        await refresh();
+        await refresh({ refreshRemote: true });
         toast("Sync complete");
       });
       $("saveEdits").addEventListener("click", async () => {
@@ -3920,11 +3951,22 @@ function renderHtml(): string {
           body: JSON.stringify({})
         });
         clearFolderListings();
-        await refresh();
+        await refresh({ refreshRemote: true });
         const writeback = result.writeback || {};
         toast((writeback.uploaded || 0) + " saved / " + (writeback.conflicts || 0) + " conflicts");
       });
-      $("refresh").addEventListener("click", refresh);
+      $("autoSyncToggle").addEventListener("click", async () => {
+        const next = !Boolean(state.summary?.autoSyncEnabled);
+        const result = await api("/api/preferences", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ autoSyncEnabled: next })
+        });
+        state.summary = { ...state.summary, preferences: result.preferences, autoSyncEnabled: result.preferences.autoSyncEnabled };
+        render();
+        toast(result.preferences.autoSyncEnabled ? "Auto-sync on" : "Manual sync only");
+      });
+      $("refresh").addEventListener("click", () => refresh({ refreshRemote: true }));
       $("pathForm").addEventListener("submit", async (event) => {
         event.preventDefault();
         const value = $("pathInput").value.trim();
@@ -3984,7 +4026,7 @@ function renderHtml(): string {
           body: JSON.stringify({ path })
         });
         clearFolderListings();
-        await refresh();
+        await refresh({ refreshRemote: true });
         setCurrentFolder(selectedSource(), folder);
         toast("Folder created");
       });
@@ -4043,7 +4085,7 @@ function renderHtml(): string {
               path: downloadNode.dataset.downloadPath
             })
           });
-          await refresh();
+          await refresh({ refreshRemote: true });
           toast("Downloaded " + shortPath(result.download?.targetPath || downloadNode.dataset.downloadPath));
           return;
         }
@@ -4059,7 +4101,7 @@ function renderHtml(): string {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ access: accessMode })
           });
-          await refresh();
+          await refresh({ refreshRemote: true });
           toast("Permission updated");
         }
         if (removeId) {
@@ -4068,7 +4110,7 @@ function renderHtml(): string {
           if (state.selectedSourceId === "local:" + removeId) {
             state.selectedSourceId = null;
           }
-          await refresh();
+          await refresh({ refreshRemote: true });
         }
         if (folderId) {
           const name = window.prompt("Folder name");
@@ -4080,7 +4122,7 @@ function renderHtml(): string {
               body: JSON.stringify({ name })
             });
             clearFolderListings();
-            await refresh();
+            await refresh({ refreshRemote: true });
             toast("Folder created");
           }
         }
@@ -4088,7 +4130,7 @@ function renderHtml(): string {
           toast("Folder sync running");
           await api("/api/shares/" + encodeURIComponent(syncId) + "/sync", { method: "POST" });
           clearFolderListings();
-          await refresh();
+          await refresh({ refreshRemote: true });
           toast("Folder sync complete");
         }
         if (openFolder) {
@@ -4161,7 +4203,7 @@ function renderHtml(): string {
       });
       document.addEventListener("drop", handleDrop);
       window.__agentVaultNativeRefresh = async (message) => {
-        await refresh();
+        await refresh({ refreshRemote: true });
         toast(message || "Updated");
       };
 
@@ -4265,7 +4307,7 @@ function renderHtml(): string {
         state.schema.dragging = false;
       });
 
-      refresh().catch((error) => {
+      refresh({ refreshRemote: true }).catch((error) => {
         renderOffline(error.message);
         toast(error.message);
       });

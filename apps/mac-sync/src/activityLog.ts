@@ -12,6 +12,7 @@ export type ActivityKind =
   | "file_edit"
   | "file_writeback"
   | "conflict"
+  | "settings"
   | "login_agent"
   | "error";
 

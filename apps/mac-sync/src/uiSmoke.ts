@@ -19,6 +19,7 @@ process.env.AGENT_VAULT_SHARES_CONFIG = path.join(tempRoot, "shares.json");
 process.env.AGENT_VAULT_ACTIVITY_LOG = path.join(tempRoot, "activity.jsonl");
 process.env.AGENT_VAULT_DOWNLOAD_DIR = path.join(tempRoot, "downloads");
 process.env.AGENT_VAULT_EDIT_DIR = path.join(tempRoot, "edits");
+process.env.AGENT_VAULT_PREFERENCES = path.join(tempRoot, "preferences.json");
 
 const token = `ui-${randomBytes(16).toString("hex")}`;
 const startedVault = await startAgentVaultServer({
@@ -73,10 +74,14 @@ try {
   assert(html.includes("data-download-path"), "desktop UI HTML missing file download action");
   assert(html.includes("DownloadURL"), "desktop UI HTML missing drag-out download payload");
   assert(html.includes('id="saveEdits"'), "desktop UI HTML missing edit writeback action");
+  assert(html.includes('id="autoSyncToggle"'), "desktop UI HTML missing auto-sync toggle");
   assert(html.includes("/api/edit-remote"), "desktop UI HTML missing editable remote file flow");
   assert(html.includes("/api/writeback-edits"), "desktop UI HTML missing writeback flow");
+  assert(html.includes("/api/preferences"), "desktop UI HTML missing preferences flow");
   assert(html.includes("__agentVaultCurrentDropTarget"), "desktop UI HTML missing contextual drop target");
   assert(html.includes('effectAllowed = "copy"'), "desktop UI HTML missing copy-safe drag-out");
+  assert(!html.includes('run("startup")'), "desktop UI should not schedule startup sync");
+  assert(!html.includes("remote poll"), "desktop UI should not schedule remote poll sync");
   assert(html.includes("agentVault.schema.nodePositions"), "desktop UI HTML missing draggable schema persistence");
   assert(html.includes('id="layoutReset"'), "desktop UI HTML missing schema layout reset");
   assert(html.includes("refresh({ silent: true })"), "desktop UI HTML missing quiet auto-refresh");
@@ -103,6 +108,23 @@ try {
   const shareJson = await expectJson(addShare);
   const share = shareJson.share as { id?: string } | undefined;
   assert(share?.id, "share id missing");
+
+  const disableAutoSync = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/preferences`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ autoSyncEnabled: false }),
+  });
+  assert(disableAutoSync.status === 200, `auto-sync preference update failed with ${disableAutoSync.status}`);
+  const disabledJson = await expectJson(disableAutoSync);
+  const disabledPreferences = disabledJson.preferences as { autoSyncEnabled?: boolean } | undefined;
+  assert(disabledPreferences?.autoSyncEnabled === false, "auto-sync preference was not disabled");
+
+  const enableAutoSync = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/preferences`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ autoSyncEnabled: true }),
+  });
+  assert(enableAutoSync.status === 200, `auto-sync preference re-enable failed with ${enableAutoSync.status}`);
 
   const updateShare = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares/${share.id}`, {
     method: "PATCH",
@@ -257,6 +279,8 @@ try {
   assert(devices?.some((device) => device.status === "online"), "summary should include online device presence");
   assert(activity?.length, "activity log should include share work");
   const shares = summaryJson.shares as Array<{ label?: string; access?: string; remoteTree?: unknown[] }> | undefined;
+  const autoSyncEnabled = summaryJson.autoSyncEnabled as boolean | undefined;
+  assert(autoSyncEnabled === true, "summary should expose enabled event-driven auto-sync");
   assert(shares?.some((item) => item.label === "Client Docs" && item.access === "readonly"), "summary should include updated share access");
   assert(shares?.some((item) => item.label === "Dropped Docs"), "summary should include natively dropped folder share");
   assert(shares?.some((item) => Array.isArray(item.remoteTree)), "summary should include tree data");

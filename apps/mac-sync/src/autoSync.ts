@@ -2,6 +2,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { access } from "node:fs/promises";
 import type { MacSyncConfig } from "./config.js";
 import { recordActivity } from "./activityLog.js";
+import { loadPreferences } from "./preferences.js";
 import { loadShareConfig, type ShareRecord } from "./shareConfig.js";
 import { syncShare, type ShareSyncResult } from "./shareSync.js";
 import { pullCommand, pushCommand, type SyncSummary } from "./syncCommands.js";
@@ -17,7 +18,6 @@ export interface AllSourcesSyncResult {
 
 export interface WatchAllSourcesOptions {
   debounceMs?: number;
-  pollMs?: number;
   onSync?: (result: AllSourcesSyncResult) => void | Promise<void>;
   onError?: (error: unknown) => void | Promise<void>;
 }
@@ -75,12 +75,11 @@ async function exists(targetPath: string): Promise<boolean> {
 
 export async function watchAllSources(config: MacSyncConfig, options: WatchAllSourcesOptions = {}): Promise<void> {
   const debounceMs = options.debounceMs ?? 2_500;
-  const pollMs = options.pollMs ?? 300_000;
   let running = false;
   let queued = false;
   let closed = false;
   let timer: NodeJS.Timeout | undefined;
-  let pollTimer: NodeJS.Timeout | undefined;
+  let watcherRefreshTimer: NodeJS.Timeout | undefined;
   let watchers: FSWatcher[] = [];
   let watchedKeys = "";
 
@@ -91,6 +90,10 @@ export async function watchAllSources(config: MacSyncConfig, options: WatchAllSo
     }
     running = true;
     try {
+      const preferences = await loadPreferences();
+      if (!preferences.autoSyncEnabled) {
+        return;
+      }
       const result = await syncAllSources(config);
       if (summaryChanged(result.total)) {
         await recordActivity("sync", `Auto-synced Agent Vault sources (${reason})`, {
@@ -149,16 +152,15 @@ export async function watchAllSources(config: MacSyncConfig, options: WatchAllSo
   }
 
   await refreshWatchers();
-  await runOnce("startup");
-  pollTimer = setInterval(() => {
-    void refreshWatchers().then(() => runOnce("poll"));
-  }, pollMs);
+  watcherRefreshTimer = setInterval(() => {
+    void refreshWatchers();
+  }, 60_000);
 
   await new Promise<void>((resolve) => {
     const stop = () => {
       closed = true;
       if (timer) clearTimeout(timer);
-      if (pollTimer) clearInterval(pollTimer);
+      if (watcherRefreshTimer) clearInterval(watcherRefreshTimer);
       for (const watcher of watchers) {
         watcher.close();
       }

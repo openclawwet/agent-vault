@@ -4,6 +4,7 @@ import WebKit
 private struct VaultSummary: Decodable {
     let mainPendingActions: Int
     let shares: [VaultShare]
+    let autoSyncEnabled: Bool?
     let server: VaultServer?
     let devices: [VaultDevice]
     let currentDeviceId: String
@@ -404,6 +405,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sync.target = self
         menu.addItem(sync)
 
+        let autoSyncTitle = summary?.autoSyncEnabled == false ? "Turn Auto-Sync On" : "Turn Auto-Sync Off"
+        let autoSync = NSMenuItem(title: autoSyncTitle, action: #selector(toggleAutoSync(_:)), keyEquivalent: "")
+        autoSync.target = self
+        menu.addItem(autoSync)
+
         let saveEdits = NSMenuItem(title: "Save Edits", action: #selector(saveEdits(_:)), keyEquivalent: "")
         saveEdits.target = self
         menu.addItem(saveEdits)
@@ -439,6 +445,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
             DispatchQueue.main.async {
                 self?.pollSummary()
+            }
+        }.resume()
+    }
+
+    @objc private func toggleAutoSync(_ sender: Any?) {
+        guard let url = desktopUrl?.deletingLastPathComponent().appendingPathComponent("api/preferences") else { return }
+        let next = !(latestSummary?.autoSyncEnabled ?? true)
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let payload = "{\"autoSyncEnabled\":\(next ? "true" : "false")}"
+        let message = next ? "Auto-sync on" : "Auto-sync off"
+        request.httpBody = payload.data(using: .utf8)
+        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                self?.pollSummary()
+                self?.webView?.evaluateJavaScript("window.__agentVaultNativeRefresh && window.__agentVaultNativeRefresh('\(message)')", completionHandler: nil)
             }
         }.resume()
     }

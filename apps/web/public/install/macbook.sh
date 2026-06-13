@@ -119,4 +119,6 @@ Daily commands:
   "$HOME/.agent-vault/bin/agent-vault-sync" push
   "$HOME/.agent-vault/bin/agent-vault-sync" pull
   "$HOME/.agent-vault/bin/agent-vault-sync" watch
+
+Auto-sync in the app is event-based. It reacts to local file changes in shared folders, not a timed full scan.
 EOF
