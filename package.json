@@ -14,6 +14,7 @@
     "smoke:web": "pnpm --filter @agent-vault/web smoke",
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs",
     "restore": "node --disable-warning=ExperimentalWarning scripts/restore.mjs",
+    "install:macos": "bash scripts/install-macos.sh",
     "package:macbook": "pnpm --filter @agent-vault/core build && pnpm --filter @agent-vault/sync build && pnpm --filter @agent-vault/mac-sync build && node scripts/build-mac-app.mjs && node scripts/package-mac-app-dmg.mjs && node scripts/package-macbook-client.mjs",
     "dev:server": "pnpm --filter @agent-vault/server dev",
     "dev:web": "pnpm --filter @agent-vault/web dev"

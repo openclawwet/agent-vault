@@ -1,8 +1,40 @@
 # Agent Vault
 
-Agent Vault is a private file vault for Nils' own devices first: Mac Mini as server, MacBook as sync client, and phone access through a private web app.
+Agent Vault is a private macOS file-sharing system for Nils' own devices first: Mac Mini as server, MacBook as native sync/client app, and phone access through a private web app.
 
-The first slice is a local tracer. It proves that a file can be uploaded through an authenticated local API, stored as a normal file, indexed in SQLite, listed, and downloaded byte-for-byte.
+The repo contains the server, sync client, native macOS app wrapper, phone PWA, backup/restore scripts, runbook, package lockfile and install scripts. It does not contain live device tokens, the local Vault database, synced files, generated DMGs, packaged tarballs or `node_modules`.
+
+## GitHub install
+
+Fresh clone on macOS:
+
+```bash
+git clone https://github.com/openclawwet/agent-vault.git
+cd agent-vault
+scripts/install-macos.sh client
+```
+
+That installs dependencies with the pinned pnpm version, builds the TypeScript packages, builds and ad-hoc signs `Agent Vault.app`, creates the private DMG/client package, installs the app into `/Applications` when possible, and initializes the MacBook client against the private Vault URL. If no token asset is available, it asks for the MacBook device token without echoing it.
+
+For an explicit server or token:
+
+```bash
+scripts/install-macos.sh client \
+  --server https://mac-mini-von-nils.tail8ca788.ts.net:8476 \
+  --token "<macbook-device-token>"
+```
+
+Prepare the Mac Mini server packages from a clone without starting or restarting any service:
+
+```bash
+scripts/install-macos.sh server
+```
+
+The generated local install artifacts live under `apps/web/public/install/` and are ignored by Git. The daily MacBook install can still use the private live endpoint:
+
+```bash
+curl -fsSL https://mac-mini-von-nils.tail8ca788.ts.net:8476/install/macbook.sh | bash
+```
 
 ## Local tracer
 
