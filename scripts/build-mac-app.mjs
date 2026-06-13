@@ -107,6 +107,13 @@ async function copyIfPresent(relativePath) {
   await cp(from, to, { recursive: true });
 }
 
+async function copyBundledPackage(packageName, relativeSourcePath, relativeNodeModulesRoot) {
+  const destination = path.join(bundledClientRoot, relativeNodeModulesRoot, "node_modules", packageName);
+  await rm(destination, { recursive: true, force: true });
+  await mkdir(path.dirname(destination), { recursive: true });
+  await cp(path.join(bundledClientRoot, relativeSourcePath), destination, { recursive: true });
+}
+
 for (const relativePath of [
   "package.json",
   "pnpm-workspace.yaml",
@@ -120,11 +127,9 @@ for (const relativePath of [
   await copyIfPresent(relativePath);
 }
 
-await mkdir(path.join(bundledClientRoot, "apps/mac-sync/node_modules/@agent-vault"), { recursive: true });
-await mkdir(path.join(bundledClientRoot, "packages/sync/node_modules/@agent-vault"), { recursive: true });
-await run("ln", ["-sfn", "../../../../packages/core", path.join(bundledClientRoot, "apps/mac-sync/node_modules/@agent-vault/core")]);
-await run("ln", ["-sfn", "../../../../packages/sync", path.join(bundledClientRoot, "apps/mac-sync/node_modules/@agent-vault/sync")]);
-await run("ln", ["-sfn", "../../../core", path.join(bundledClientRoot, "packages/sync/node_modules/@agent-vault/core")]);
+await copyBundledPackage("@agent-vault/core", "packages/core", "apps/mac-sync");
+await copyBundledPackage("@agent-vault/sync", "packages/sync", "apps/mac-sync");
+await copyBundledPackage("@agent-vault/core", "packages/core", "packages/sync");
 
 await writeFile(
   path.join(bundledBinRoot, "agent-vault-sync"),
