@@ -36,6 +36,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$INSTALL_DIR")" "$SYNC_DIR" "$HOME/.agent-vault/bin"
+printf '%s\n' "$NODE_BIN" >"$HOME/.agent-vault/node-bin"
 
 echo "Installing Agent Vault MacBook client from private Vault URL..."
 curl -fsSL "$PACKAGE_URL" -o "$TMP_DIR/client.tar.gz"

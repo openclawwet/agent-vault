@@ -162,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
     private var latestSummary: VaultSummary?
     private var outputBuffer = ""
     private var didLoadServer = false
+    private var lastLaunchError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -364,8 +365,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
             let data = handle.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
             DispatchQueue.main.async {
+                let message = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !message.isEmpty {
+                    self?.lastLaunchError = message
+                }
                 if self?.didLoadServer == false {
-                    self?.showError(chunk.trimmingCharacters(in: .whitespacesAndNewlines))
+                    self?.showError(message)
                 }
             }
         }
@@ -375,7 +380,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
                 guard self?.serverProcess === child else { return }
                 self?.serverProcess = nil
                 if self?.didLoadServer == false {
-                    self?.showError("Agent Vault desktop server stopped before the window could load.")
+                    let fallback = "Agent Vault desktop server stopped before the window could load."
+                    self?.showError(self?.lastLaunchError ?? fallback)
                 }
             }
         }
@@ -383,6 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         do {
             try process.run()
             serverProcess = process
+            lastLaunchError = nil
         } catch {
             showError("Could not start Agent Vault: \(error.localizedDescription)")
         }

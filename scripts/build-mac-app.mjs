@@ -85,22 +85,42 @@ await writeFile(
   path.join(bundledBinRoot, "agent-vault-sync"),
   `#!/usr/bin/env bash
 set -euo pipefail
+SCRIPT_DIR="$(cd -P "$(dirname "\${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+ROOT_DIR="$(cd -P "$SCRIPT_DIR/../client" >/dev/null 2>&1 && pwd)"
 NODE_BIN="\${AGENT_VAULT_NODE_BIN:-}"
-if [[ -z "$NODE_BIN" ]]; then
-  if command -v node >/dev/null 2>&1; then
-    NODE_BIN="$(command -v node)"
-  elif [[ -x /opt/homebrew/bin/node ]]; then
-    NODE_BIN="/opt/homebrew/bin/node"
-  elif [[ -x /usr/local/bin/node ]]; then
-    NODE_BIN="/usr/local/bin/node"
+if [[ -n "$NODE_BIN" && ! -x "$NODE_BIN" ]]; then
+  NODE_BIN=""
+fi
+if [[ -z "$NODE_BIN" && -f "$HOME/.agent-vault/node-bin" ]]; then
+  STORED_NODE_BIN="$(tr -d '\\r\\n' <"$HOME/.agent-vault/node-bin")"
+  if [[ -x "$STORED_NODE_BIN" ]]; then
+    NODE_BIN="$STORED_NODE_BIN"
   fi
 fi
+if [[ -z "$NODE_BIN" ]] && command -v node >/dev/null 2>&1; then
+  NODE_BIN="$(command -v node)"
+fi
+for candidate in \\
+  /opt/homebrew/bin/node \\
+  /usr/local/bin/node \\
+  /usr/bin/node \\
+  "$HOME"/.volta/bin/node \\
+  "$HOME"/.nvm/versions/node/*/bin/node \\
+  "$HOME"/.asdf/installs/nodejs/*/bin/node \\
+  "$HOME"/.local/share/mise/installs/node/*/bin/node
+do
+  if [[ -z "$NODE_BIN" && -x "$candidate" ]]; then
+    NODE_BIN="$candidate"
+  fi
+done
+if [[ -n "$NODE_BIN" ]]; then
+  export PATH="$(dirname "$NODE_BIN"):$PATH"
+fi
 if [[ -z "$NODE_BIN" ]]; then
+  echo "Agent Vault could not find Node.js from the macOS app. Re-run the Agent Vault installer once from Terminal so it can store the Node path, or install Node via Homebrew/Volta/NVM." >&2
   osascript -e 'display alert "Agent Vault needs Node.js" message "Install Node.js once, then reopen Agent Vault." as warning' >/dev/null 2>&1 || true
   exit 127
 fi
-SCRIPT_DIR="$(cd -P "$(dirname "\${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-ROOT_DIR="$(cd -P "$SCRIPT_DIR/../client" >/dev/null 2>&1 && pwd)"
 exec "$NODE_BIN" "$ROOT_DIR/apps/mac-sync/dist/cli.js" "$@"
 `,
   { mode: 0o755 },
