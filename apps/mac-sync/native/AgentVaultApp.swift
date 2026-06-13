@@ -57,67 +57,6 @@ private struct VaultFlow: Decodable {
     let bytes: Int
 }
 
-final class DragHandleView: NSView {
-    var onLocalFileDrop: (([URL]) -> Void)?
-    var onDragState: ((Bool) -> Void)?
-
-    override var isFlipped: Bool { true }
-    override var mouseDownCanMoveWindow: Bool { true }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        registerForDraggedTypes([.fileURL])
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        registerForDraggedTypes([.fileURL])
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, alphaValue > 0.01, bounds.contains(point) else { return nil }
-
-        let trafficAndAddButtonZone = NSRect(x: 0, y: 0, width: 78, height: bounds.height)
-        let topActionZone = NSRect(x: max(0, bounds.width - 246), y: 0, width: 246, height: bounds.height)
-        if trafficAndAddButtonZone.contains(point) || topActionZone.contains(point) {
-            return nil
-        }
-
-        return self
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        window?.performDrag(with: event)
-    }
-
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        onDragState?(true)
-        return .copy
-    }
-
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        return .copy
-    }
-
-    override func draggingExited(_ sender: NSDraggingInfo?) {
-        onDragState?(false)
-    }
-
-    override func draggingEnded(_ sender: NSDraggingInfo) {
-        onDragState?(false)
-    }
-
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        onDragState?(false)
-        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
-              !urls.isEmpty else {
-            return false
-        }
-        onLocalFileDrop?(urls)
-        return true
-    }
-}
-
 final class DropWebView: WKWebView {
     var onLocalFileDrop: (([URL]) -> Void)?
     var onDragState: ((Bool) -> Void)?
@@ -245,16 +184,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1160, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Agent Vault"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isMovableByWindowBackground = false
         window.isOpaque = false
         window.backgroundColor = NSColor.clear
+        window.appearance = NSAppearance(named: .darkAqua)
         window.minSize = NSSize(width: 920, height: 620)
         window.hasShadow = true
 
@@ -266,27 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         materialView.addSubview(webView)
         webView.translatesAutoresizingMaskIntoConstraints = false
 
-        let dragHandle = DragHandleView()
-        dragHandle.translatesAutoresizingMaskIntoConstraints = false
-        dragHandle.wantsLayer = true
-        dragHandle.layer?.backgroundColor = NSColor.clear.cgColor
-        dragHandle.onLocalFileDrop = { [weak self] urls in
-            self?.handleDroppedUrls(urls)
-        }
-        dragHandle.onDragState = { [weak self] active in
-            self?.setNativeDropActive(active)
-        }
-        materialView.addSubview(dragHandle)
-
         NSLayoutConstraint.activate([
             webView.leadingAnchor.constraint(equalTo: materialView.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: materialView.trailingAnchor),
             webView.topAnchor.constraint(equalTo: materialView.topAnchor),
-            webView.bottomAnchor.constraint(equalTo: materialView.bottomAnchor),
-            dragHandle.leadingAnchor.constraint(equalTo: materialView.leadingAnchor),
-            dragHandle.trailingAnchor.constraint(equalTo: materialView.trailingAnchor),
-            dragHandle.topAnchor.constraint(equalTo: materialView.topAnchor),
-            dragHandle.heightAnchor.constraint(equalToConstant: 64)
+            webView.bottomAnchor.constraint(equalTo: materialView.bottomAnchor)
         ])
 
         window.contentView = materialView
