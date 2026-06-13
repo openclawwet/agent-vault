@@ -152,7 +152,7 @@ final class DropWebView: WKWebView {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler {
     private var window: NSWindow?
     private var webView: WKWebView?
     private var serverProcess: Process?
@@ -214,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func createWindow() {
         let configuration = WKWebViewConfiguration()
         configuration.allowsAirPlayForMediaPlayback = false
+        configuration.userContentController.add(self, name: "agentVault")
 
         let webView = DropWebView(frame: .zero, configuration: configuration)
         webView.allowsMagnification = false
@@ -282,6 +283,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.webView = webView
     }
 
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "agentVault",
+              let body = message.body as? [String: Any],
+              let action = body["action"] as? String else {
+            return
+        }
+
+        if action == "chooseFolder" {
+            chooseSharedFolder()
+        }
+    }
+
+    private func chooseSharedFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Folder"
+        panel.message = "Choose a folder to share with Agent Vault."
+        panel.prompt = "Share"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+
+        panel.begin { [weak self] result in
+            guard let self else { return }
+            if result == .OK, let url = panel.url {
+                self.webView?.evaluateJavaScript("window.__agentVaultNativeFolderChosen && window.__agentVaultNativeFolderChosen(\(self.jsString(url.path)))", completionHandler: nil)
+            } else {
+                self.webView?.evaluateJavaScript("window.__agentVaultNativeFolderCancelled && window.__agentVaultNativeFolderCancelled()", completionHandler: nil)
+            }
+        }
+    }
+
     private func syncBinaryPath() -> String? {
         let environment = ProcessInfo.processInfo.environment
         if let explicit = environment["AGENT_VAULT_SYNC_BIN"], FileManager.default.isExecutableFile(atPath: explicit) {
@@ -290,9 +323,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [
+            Bundle.main.path(forResource: "agent-vault-sync", ofType: nil, inDirectory: "bin"),
             "\(home)/.agent-vault/bin/agent-vault-sync",
             "\(home)/.agent-vault/client/agent-vault/bin/agent-vault-sync"
-        ]
+        ].compactMap { $0 }
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 

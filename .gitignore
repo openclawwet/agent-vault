@@ -7,5 +7,6 @@ dist/
 .playwright-cli/
 output/
 apps/web/public/install/*.tar.gz
+apps/web/public/install/*.dmg
 apps/web/public/install/*.token
 apps/mac-sync/native/build/

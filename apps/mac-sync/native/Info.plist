@@ -25,6 +25,18 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Agent Vault uses Finder actions only when you ask it to reveal or open shared files.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Agent Vault needs access to folders you explicitly share, including Desktop when selected.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Agent Vault needs access to folders you explicitly share from Documents.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Agent Vault needs access to folders you explicitly share from Downloads.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Agent Vault can share folders you explicitly select from network volumes.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Agent Vault can share folders you explicitly select from removable drives.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>

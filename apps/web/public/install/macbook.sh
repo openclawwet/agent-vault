@@ -5,7 +5,8 @@ SERVER_URL="${AGENT_VAULT_SERVER_URL:-https://mac-mini-von-nils.tail8ca788.ts.ne
 PACKAGE_URL="${AGENT_VAULT_PACKAGE_URL:-$SERVER_URL/install/agent-vault-macbook-client.tar.gz}"
 TOKEN_URL="${AGENT_VAULT_TOKEN_URL:-$SERVER_URL/install/macbook.token}"
 INSTALL_DIR="${AGENT_VAULT_INSTALL_DIR:-$HOME/.agent-vault/client/agent-vault}"
-APP_TARGET="${AGENT_VAULT_APP_PATH:-$HOME/Applications/Agent Vault.app}"
+APP_TARGET="${AGENT_VAULT_APP_PATH:-/Applications/Agent Vault.app}"
+APP_FALLBACK_TARGET="$HOME/Applications/Agent Vault.app"
 SYNC_DIR="${AGENT_VAULT_SYNC_DIR:-$HOME/AgentVault}"
 SYNC_SPACE="${AGENT_VAULT_SYNC_SPACE:-MacBook Shared}"
 
@@ -56,10 +57,20 @@ ln -sfn "../../../core" "$INSTALL_DIR/packages/sync/node_modules/@agent-vault/co
 
 APP_SOURCE="$INSTALL_DIR/apps/mac-sync/native/build/Agent Vault.app"
 if [[ -d "$APP_SOURCE" ]]; then
-  mkdir -p "$(dirname "$APP_TARGET")"
-  rm -rf "$APP_TARGET"
-  cp -R "$APP_SOURCE" "$APP_TARGET"
-  chmod +x "$APP_TARGET/Contents/MacOS/AgentVault" 2>/dev/null || true
+  install_app() {
+    local target="$1"
+    mkdir -p "$(dirname "$target")"
+    rm -rf "$target"
+    cp -R "$APP_SOURCE" "$target"
+    chmod +x "$target/Contents/MacOS/AgentVault" 2>/dev/null || true
+    xattr -dr com.apple.quarantine "$target" 2>/dev/null || true
+  }
+
+  if ! install_app "$APP_TARGET"; then
+    echo "Could not install to $APP_TARGET without admin rights; installing to $APP_FALLBACK_TARGET instead." >&2
+    APP_TARGET="$APP_FALLBACK_TARGET"
+    install_app "$APP_TARGET"
+  fi
 fi
 
 cat >"$INSTALL_DIR/bin/agent-vault-sync" <<SCRIPT
@@ -109,6 +120,7 @@ curl -fsSL "$SERVER_URL/health" >/dev/null
 cat <<EOF
 
 Agent Vault MacBook client is installed.
+App: $APP_TARGET
 Sync folder: $SYNC_DIR
 Server: $SERVER_URL
 

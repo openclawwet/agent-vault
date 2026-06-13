@@ -14,6 +14,24 @@ async function expectJson(response: Response): Promise<Record<string, unknown>> 
   return (await response.json()) as Record<string, unknown>;
 }
 
+async function waitForVaultFile(url: string, token: string, space: string, filePath: string): Promise<void> {
+  const endpoint = `${url}/spaces/${encodeURIComponent(space)}/files`;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const files = await fetch(endpoint, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (files.ok) {
+      const filesJson = await expectJson(files);
+      const listed = filesJson.files as Array<{ path: string }> | undefined;
+      if (listed?.some((file) => file.path === filePath)) {
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Vault file did not appear: ${filePath}`);
+}
+
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-vault-ui-"));
 process.env.AGENT_VAULT_SHARES_CONFIG = path.join(tempRoot, "shares.json");
 process.env.AGENT_VAULT_ACTIVITY_LOG = path.join(tempRoot, "activity.jsonl");
@@ -67,6 +85,7 @@ try {
   assert(html.includes('data-detail-toggle="true"'), "desktop UI HTML missing details toggle");
   assert(html.includes('id="folderNew"'), "desktop UI HTML missing in-folder create action");
   assert(html.includes("/api/folder-entries"), "desktop UI HTML missing lazy folder entries endpoint");
+  assert(html.includes("/api/local-folder-entries"), "desktop UI HTML missing local lazy folder entries endpoint");
   assert(html.includes('data-file-action="open"'), "desktop UI HTML missing file open action");
   assert(html.includes('data-file-action="download"'), "desktop UI HTML missing file download action");
   assert(html.includes("activateFolderEntry"), "desktop UI HTML missing Finder-style entry activation");
@@ -80,6 +99,8 @@ try {
   assert(html.includes("/api/preferences"), "desktop UI HTML missing preferences flow");
   assert(html.includes("__agentVaultCurrentDropTarget"), "desktop UI HTML missing contextual drop target");
   assert(html.includes("__agentVaultNativeDropComplete"), "desktop UI HTML missing native drop completion handler");
+  assert(html.includes("__agentVaultNativeFolderChosen"), "desktop UI HTML missing native folder picker completion handler");
+  assert(html.includes("webkit.messageHandlers.agentVault"), "desktop UI HTML missing native folder picker bridge");
   assert(html.includes("refreshAfterDrop"), "desktop UI HTML missing post-drop target selection");
   assert(html.includes('effectAllowed = "copy"'), "desktop UI HTML missing copy-safe drag-out");
   assert(!html.includes('run("startup")'), "desktop UI should not schedule startup sync");
@@ -110,6 +131,9 @@ try {
   const shareJson = await expectJson(addShare);
   const share = shareJson.share as { id?: string } | undefined;
   assert(share?.id, "share id missing");
+  const initialSync = shareJson.initialSync as { status?: string } | undefined;
+  assert(initialSync?.status === "queued", "share add should queue initial sync instead of blocking the UI");
+  await waitForVaultFile(startedVault.url, token, "MacBook Shared", "Client Docs/brief.txt");
 
   const disableAutoSync = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/preferences`, {
     method: "PATCH",
@@ -165,6 +189,14 @@ try {
   const folderEntriesJson = await expectJson(folderEntries);
   const entries = folderEntriesJson.entries as Array<{ name?: string; kind?: string; size?: number }> | undefined;
   assert(entries?.some((entry) => entry.name === "brief.txt" && entry.kind === "file"), "folder entries should include shared file");
+
+  const localFolderEntries = await fetch(
+    `${startedUi.url.replace(/\/desktop$/, "")}/api/local-folder-entries?share=${encodeURIComponent(share.id)}&folder=`,
+  );
+  assert(localFolderEntries.status === 200, `local folder entries failed with ${localFolderEntries.status}`);
+  const localFolderEntriesJson = await expectJson(localFolderEntries);
+  const localEntries = localFolderEntriesJson.entries as Array<{ name?: string; kind?: string; size?: number }> | undefined;
+  assert(localEntries?.some((entry) => entry.name === "brief.txt" && entry.kind === "file"), "local folder entries should include shared local file");
 
   const folder = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/shares/${share.id}/folders`, {
     method: "POST",

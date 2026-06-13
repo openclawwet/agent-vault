@@ -109,7 +109,12 @@ export async function scanLocal(localDir: string, options: LocalScanOptions = {}
   const nextCache: ScanCache = { files: {} };
 
   async function walk(current: string): Promise<void> {
-    const entries = await readdir(current, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
       const absolute = path.join(current, entry.name);
       const relative = path.relative(root, absolute).split(path.sep).join("/");
@@ -123,12 +128,22 @@ export async function scanLocal(localDir: string, options: LocalScanOptions = {}
       if (!entry.isFile()) {
         continue;
       }
-      const fileStat = await stat(absolute);
+      let fileStat;
+      try {
+        fileStat = await stat(absolute);
+      } catch {
+        continue;
+      }
       const cached = previousCache.files[relative];
-      const hash =
-        cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs
-          ? cached.hash
-          : await hashFile(absolute);
+      let hash: string;
+      try {
+        hash =
+          cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs
+            ? cached.hash
+            : await hashFile(absolute);
+      } catch {
+        continue;
+      }
       nextCache.files[relative] = { hash, size: fileStat.size, mtimeMs: fileStat.mtimeMs };
       results.push({
         path: relative,

@@ -26,6 +26,7 @@ export function defaultNativeAppPaths(appPath?: string): string[] {
   return [
     appPath,
     process.env.AGENT_VAULT_APP_PATH,
+    path.join("/Applications", "Agent Vault.app"),
     path.join(home, "Applications", "Agent Vault.app"),
     path.join(distRoot(), "..", "native", "build", "Agent Vault.app"),
     path.join(process.cwd(), "apps", "mac-sync", "native", "build", "Agent Vault.app"),

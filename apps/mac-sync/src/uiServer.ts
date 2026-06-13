@@ -164,7 +164,12 @@ async function scanLocalForUi(localDir: string, options: LocalScanOptions = {}):
   const results: TreeFile[] = [];
 
   async function walk(current: string): Promise<void> {
-    const entries = await readdir(current, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
       const absolute = path.join(current, entry.name);
       const relative = path.relative(root, absolute).split(path.sep).join("/");
@@ -174,7 +179,12 @@ async function scanLocalForUi(localDir: string, options: LocalScanOptions = {}):
         continue;
       }
       if (!entry.isFile()) continue;
-      const fileStat = await stat(absolute);
+      let fileStat;
+      try {
+        fileStat = await stat(absolute);
+      } catch {
+        continue;
+      }
       results.push({ path: relative, size: fileStat.size });
     }
   }
@@ -457,6 +467,79 @@ function immediateFolderEntries(files: TreeFile[], prefix = "", folder = "", max
   return [...children.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
 }
 
+async function immediateLocalFolderEntries(share: ShareRecord, folder = "", maxEntries = 5000): Promise<TreeNode[]> {
+  const root = path.resolve(share.localDir);
+  const cleanFolder = safeOptionalRemotePath(folder);
+  const target = path.resolve(root, ...cleanFolder.split("/").filter(Boolean));
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw new UiError(400, "invalid_local_folder", "Local folder path is invalid.");
+  }
+
+  let entries;
+  try {
+    entries = await readdir(target, { withFileTypes: true });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Folder could not be read.";
+    throw new UiError(403, "local_folder_unavailable", message);
+  }
+
+  const nodes: TreeNode[] = [];
+  for (const entry of entries) {
+    if (nodes.length >= maxEntries) {
+      nodes.push({
+        name: "More items",
+        path: cleanFolder ? `${cleanFolder}/More items` : "More items",
+        kind: "folder",
+        count: 0,
+        size: 0,
+        truncated: true,
+        children: [],
+      });
+      break;
+    }
+
+    const relative = cleanFolder ? `${cleanFolder}/${entry.name}` : entry.name;
+    if (isIgnoredForUi(relative, entry.name, { ignoreNames: share.ignoreNames, ignorePathPrefixes: share.ignorePathPrefixes })) {
+      continue;
+    }
+
+    const absolute = path.join(target, entry.name);
+    let fileStat;
+    try {
+      fileStat = await stat(absolute);
+    } catch {
+      continue;
+    }
+
+    if (fileStat.isDirectory()) {
+      nodes.push({
+        name: entry.name,
+        path: relative,
+        kind: "folder",
+        count: 0,
+        size: 0,
+        children: [],
+      });
+      continue;
+    }
+
+    if (!fileStat.isFile()) {
+      continue;
+    }
+
+    nodes.push({
+      name: entry.name,
+      path: relative,
+      kind: "file",
+      count: 1,
+      size: fileStat.size,
+      updatedAt: fileStat.mtime.toISOString(),
+    });
+  }
+
+  return nodes.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
+}
+
 function remoteSourcePrefix(filePath: string): { label: string; prefix: string; origin: string } | undefined {
   const parts = filePath.split("/").filter(Boolean);
   if (!parts.length) return undefined;
@@ -631,6 +714,7 @@ interface RemoteSnapshot {
 let remoteSnapshot: RemoteSnapshot | null = null;
 let remoteRefresh: Promise<RemoteSnapshot> | null = null;
 const REMOTE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.AGENT_VAULT_REMOTE_SNAPSHOT_TTL_MS ?? "300000", 10);
+const backgroundTasks = new Set<Promise<void>>();
 
 function placeholderRemoteSpaces(spaces: SpaceAccessInfo[]): RemoteSpaceSummary[] {
   return spaces.map((space) => ({
@@ -826,6 +910,33 @@ async function syncAll(config: MacSyncConfig) {
     shares: result.shares.map((share) => ({ label: share.label, summary: share.summary })),
   });
   return result;
+}
+
+function syncShareInBackground(config: MacSyncConfig, share: ShareRecord, reason: string): void {
+  const task = syncShare(config, share)
+    .then(async (result) => {
+      clearSummaryCaches();
+      await recordActivity("sync", `${reason} ${share.label}`, {
+        share: share.label,
+        summary: result.summary,
+      });
+    })
+    .catch(async (error: unknown) => {
+      await recordActivity("error", `${reason} failed ${share.label}`, {
+        share: share.label,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    })
+    .finally(() => {
+      backgroundTasks.delete(task);
+    });
+  backgroundTasks.add(task);
+  void task;
+}
+
+async function waitForBackgroundTasks(): Promise<void> {
+  if (!backgroundTasks.size) return;
+  await Promise.allSettled([...backgroundTasks]);
 }
 
 function safeRelativeFolder(value: string): string {
@@ -1155,14 +1266,14 @@ async function ingestLocalPath(config: MacSyncConfig, inputPath: string, target:
       space: config.space,
       access: "readwrite",
     });
-    const initialSync = await syncShare(config, share);
+    syncShareInBackground(config, share, "Initial sync queued for dropped folder");
     await recordActivity("share_added", `Dropped shared folder ${share.label}`, {
       localDir: share.localDir,
       space: share.space,
       remotePathPrefix: share.remotePathPrefix,
-      initialSync: initialSync.summary,
+      initialSync: "queued",
     });
-    return { kind: "share", target: { space: share.space, pathPrefix: share.remotePathPrefix }, share, initialSync };
+    return { kind: "share", target: { space: share.space, pathPrefix: share.remotePathPrefix }, share, initialSync: { status: "queued" } };
   }
 
   if (!localStat.isFile()) {
@@ -1378,6 +1489,23 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
     return;
   }
 
+  if (method === "GET" && route.join("/") === "api/local-folder-entries") {
+    const shareId = String(url.searchParams.get("share") ?? "");
+    const folder = safeOptionalRemotePath(String(url.searchParams.get("folder") ?? ""));
+    const shareConfig = await loadShareConfig();
+    const share = shareConfig.shares.find((item) => item.id === shareId);
+    if (!share) {
+      throw new UiError(404, "share_not_found", "Shared folder was not found.");
+    }
+    sendJson(res, 200, {
+      share: share.id,
+      folder,
+      entries: await immediateLocalFolderEntries(share, folder),
+      indexedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
   if (method === "GET" && route.join("/") === "api/raw-download") {
     const space = safeDownloadSpace(String(url.searchParams.get("space") ?? config.space));
     const filePath = safeRemoteFilePath(String(url.searchParams.get("path") ?? ""));
@@ -1401,15 +1529,15 @@ async function handleApi(config: MacSyncConfig, req: IncomingMessage, res: Serve
       ignoreNames: Array.isArray(body.ignoreNames) ? body.ignoreNames.map((item) => String(item)) : undefined,
       ignorePathPrefixes: Array.isArray(body.ignorePathPrefixes) ? body.ignorePathPrefixes.map((item) => String(item)) : undefined,
     });
-    const initialSync = await syncShare(config, share);
+    syncShareInBackground(config, share, "Initial sync queued for shared folder");
     clearSummaryCaches();
     await recordActivity("share_added", `Added shared folder ${share.label}`, {
       localDir: share.localDir,
       space: share.space,
       remotePathPrefix: share.remotePathPrefix,
-      initialSync: initialSync.summary,
+      initialSync: "queued",
     });
-    sendJson(res, 201, { share, initialSync });
+    sendJson(res, 201, { share, initialSync: { status: "queued" } });
     return;
   }
 
@@ -1555,8 +1683,10 @@ export async function startDesktopUi(config: MacSyncConfig, options: DesktopUiOp
     server,
     close() {
       stopAutoSync();
-      return new Promise((resolve, reject) => {
+      return new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
+      }).then(() => {
+        return waitForBackgroundTasks();
       });
     },
   };
@@ -3285,10 +3415,12 @@ function renderHtml(): string {
         return node?.kind === "folder" ? node.children || [] : tree;
       };
       const folderListingKey = (source, folder) => source.sourceId + "::" + String(folder || "");
-      const folderEntriesUrl = (source, folder) =>
-        "/api/folder-entries?space=" + encodeURIComponent(source.space || "") +
-        "&prefix=" + encodeURIComponent(source.remotePathPrefix || "") +
-        "&folder=" + encodeURIComponent(folder || "");
+      const folderEntriesUrl = (source, folder) => source?.sourceKind === "local"
+        ? "/api/local-folder-entries?share=" + encodeURIComponent(source.id || "") +
+          "&folder=" + encodeURIComponent(folder || "")
+        : "/api/folder-entries?space=" + encodeURIComponent(source.space || "") +
+          "&prefix=" + encodeURIComponent(source.remotePathPrefix || "") +
+          "&folder=" + encodeURIComponent(folder || "");
       async function loadFolderEntries(source, folder) {
         if (!source) return;
         const key = folderListingKey(source, folder);
@@ -3384,6 +3516,7 @@ function renderHtml(): string {
         const previousSourceKey = state.summary ? summarySourceKey() : "";
         const previousBrowserKey = state.summary ? browserStateKey() : "";
         const params = new URLSearchParams();
+        if (options.localDetail !== true) params.set("light", "1");
         if (options.full) params.set("full", "1");
         if (options.refreshRemote) params.set("remote", "1");
         state.summary = await api("/api/summary" + (params.size ? "?" + params.toString() : ""));
@@ -3619,9 +3752,8 @@ function renderHtml(): string {
 
         const folder = currentFolder(source);
         const listingKey = folderListingKey(source, folder);
-        const shouldUseRemoteListing = source.sourceKind !== "local";
-        const lazyEntries = shouldUseRemoteListing ? state.folderEntriesByKey[listingKey] : undefined;
-        if (shouldUseRemoteListing && lazyEntries === undefined && !state.folderLoadingByKey[listingKey]) {
+        const lazyEntries = state.folderEntriesByKey[listingKey];
+        if (lazyEntries === undefined && !state.folderLoadingByKey[listingKey]) {
           void loadFolderEntries(source, folder);
         }
         const entries = (Array.isArray(lazyEntries) ? lazyEntries : folderEntries(source)).slice().sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
@@ -3645,7 +3777,8 @@ function renderHtml(): string {
               const selected = state.selectedEntryKey === key;
               const metric = node.kind === "folder" ? node.count + " items" : fmtSize(node.size) + (node.version ? " / v" + node.version : "");
               const openPath = node.kind === "folder" ? node.path : "";
-              return '<div class="folder-item ' + esc(state.viewMode) + (selected ? " selected" : "") + '" role="button" tabindex="0" draggable="true" data-entry-key="' + esc(key) + '" data-entry-kind="' + esc(node.kind) + '" data-entry-path="' + esc(node.path) + '" data-folder-open="' + esc(openPath) + '" data-file-name="' + esc(node.name) + '" data-file-mime="' + esc(mime) + '" data-file-version="' + esc(node.version || "") + '" data-file-hash="' + esc(node.sha256 || "") + '" data-file-updated="' + esc(node.updatedAt || "") + '" data-file-download-space="' + esc(source.space || "") + '" data-file-download-path="' + esc(remotePath) + '" data-raw-download-url="' + esc(downloadUrl) + '" data-local-open="' + esc(localPath) + '" title="' + esc(node.name) + '">' +
+              const localFileUrl = node.kind === "file" && localPath ? fileUrlForLocalPath(localPath) : "";
+              return '<div class="folder-item ' + esc(state.viewMode) + (selected ? " selected" : "") + '" role="button" tabindex="0" draggable="true" data-entry-key="' + esc(key) + '" data-entry-kind="' + esc(node.kind) + '" data-entry-path="' + esc(node.path) + '" data-folder-open="' + esc(openPath) + '" data-file-name="' + esc(node.name) + '" data-file-mime="' + esc(mime) + '" data-file-version="' + esc(node.version || "") + '" data-file-hash="' + esc(node.sha256 || "") + '" data-file-updated="' + esc(node.updatedAt || "") + '" data-file-download-space="' + esc(source.space || "") + '" data-file-download-path="' + esc(remotePath) + '" data-raw-download-url="' + esc(downloadUrl) + '" data-local-open="' + esc(localPath) + '" data-local-file-url="' + esc(localFileUrl) + '" title="' + esc(node.name) + '">' +
                 renderFileIcon(kind, extension) +
                 '<span class="folder-item__name">' + esc(node.name) + '</span>' +
                 '<span class="folder-item__kind">' + esc(kindLabel(node)) + '</span>' +
@@ -4006,6 +4139,11 @@ function renderHtml(): string {
         }
       });
       $("chooseFolder").addEventListener("click", async () => {
+        if (window.webkit?.messageHandlers?.agentVault) {
+          toast("Choose folder");
+          window.webkit.messageHandlers.agentVault.postMessage({ action: "chooseFolder" });
+          return;
+        }
         const choice = await api("/api/choose-folder");
         if (choice.path) await addPath(choice.path);
       });
@@ -4209,7 +4347,9 @@ function renderHtml(): string {
         if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
         event.dataTransfer?.setData("text/plain", label);
         if (entryNode.dataset.entryKind === "file") {
-          if (entryNode.dataset.rawDownloadUrl) {
+          if (entryNode.dataset.localFileUrl) {
+            event.dataTransfer?.setData("text/uri-list", entryNode.dataset.localFileUrl);
+          } else if (entryNode.dataset.rawDownloadUrl) {
             const mime = entryNode.dataset.fileMime || "application/octet-stream";
             const name = entryNode.dataset.fileName || "agent-vault-file";
             event.dataTransfer?.setData("DownloadURL", mime + ":" + name + ":" + entryNode.dataset.rawDownloadUrl);
@@ -4259,6 +4399,17 @@ function renderHtml(): string {
       window.__agentVaultNativeRefresh = async (message) => {
         await refresh({ refreshRemote: true });
         toast(message || "Updated");
+      };
+      window.__agentVaultNativeFolderChosen = async (path) => {
+        if (!path) return;
+        try {
+          await addPath(path);
+        } catch (error) {
+          toast(error.message || "Folder could not be added");
+        }
+      };
+      window.__agentVaultNativeFolderCancelled = () => {
+        toast("Folder selection cancelled");
       };
 
       $("zoomIn").addEventListener("click", () => {
