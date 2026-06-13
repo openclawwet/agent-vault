@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { initConfig, loadConfig } from "./config.js";
+import { initConfig, loadConfig, loadOrInitConfig } from "./config.js";
 import { installLoginAgent, uninstallLoginAgent } from "./loginAgent.js";
 import { openNativeDesktopApp } from "./nativeApp.js";
 import { watchAllSources } from "./autoSync.js";
@@ -40,7 +40,8 @@ if (command === "init") {
   console.log(`Agent Vault sync config written to ${configPath}`);
   console.log(`Local folder: ${config.localDir}`);
 } else {
-  const config = await loadConfig(options.config);
+  const config =
+    command === "serve-ui" || command === "ui" ? await loadOrInitConfig(options.config) : await loadConfig(options.config);
 
   if (command === "scan") {
     const files = await scanCommand(config);

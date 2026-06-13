@@ -253,6 +253,21 @@ try {
     "root dropped file was not uploaded into visible Desktop Drops",
   );
 
+  for (const [filePath, body] of [
+    ["Mac Mini/CB Dashboard/README.md", "mac mini source\n"],
+    ["SPO-2/app/page.tsx", "macbook source\n"],
+  ] as const) {
+    const seeded = await fetch(`${startedVault.url}/spaces/MacBook%20Shared/file?path=${encodeURIComponent(filePath)}`, {
+      method: "PUT",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "idempotency-key": `ui-smoke-source-${filePath}`,
+      },
+      body,
+    });
+    assert(seeded.status === 201, `remote source seed failed with ${seeded.status}`);
+  }
+
   const edit = await fetch(`${startedUi.url.replace(/\/desktop$/, "")}/api/edit-remote`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -339,6 +354,19 @@ try {
   assert(shares?.some((item) => item.label === "Client Docs" && item.access === "readonly"), "summary should include updated share access");
   assert(shares?.some((item) => item.label === "Dropped Docs"), "summary should include natively dropped folder share");
   assert(shares?.some((item) => Array.isArray(item.remoteTree)), "summary should include tree data");
+  const remoteSources = summaryJson.remoteSources as Array<{ label?: string; origin?: string; remoteFileCount?: number }> | undefined;
+  assert(
+    remoteSources?.some((item) => item.label === "CB Dashboard" && item.origin === "Mac Mini"),
+    "summary should expose Mac Mini remote sources as visible root folders",
+  );
+  assert(
+    remoteSources?.some((item) => item.label === "SPO-2" && item.origin === "MacBook"),
+    "summary should classify MacBook remote shares as MacBook sources when no local share is registered",
+  );
+  assert(
+    remoteSources?.some((item) => item.label === "Desktop Drops" && item.origin === "Vault"),
+    "summary should expose Desktop Drops as a visible Vault source",
+  );
   const clientDocsTree = shares?.find((item) => item.label === "Client Docs")?.remoteTree as Array<{ name?: string; kind?: string }> | undefined;
   assert(
     clientDocsTree?.some((node) => node.name === "Research Notes" && node.kind === "folder"),

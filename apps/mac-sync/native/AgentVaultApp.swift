@@ -4,6 +4,7 @@ import WebKit
 private struct VaultSummary: Decodable {
     let mainPendingActions: Int
     let shares: [VaultShare]
+    let remoteSources: [VaultRemoteSource]?
     let autoSyncEnabled: Bool?
     let server: VaultServer?
     let devices: [VaultDevice]
@@ -20,6 +21,13 @@ private struct VaultShare: Decodable {
     let localSize: Int
     let remoteFileCount: Int
     let remoteSize: Int
+}
+
+private struct VaultRemoteSource: Decodable {
+    let label: String
+    let origin: String?
+    let remoteFileCount: Int?
+    let remoteSize: Int?
 }
 
 private struct VaultDevice: Decodable {
@@ -468,7 +476,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
 
         if let summary {
             let pending = summary.mainPendingActions + summary.shares.reduce(0) { $0 + $1.pendingActions }
-            let sourceText = summary.shares.count == 1 ? "1 source" : "\(summary.shares.count) sources"
+            let sourceCount = summary.shares.count + (summary.remoteSources?.count ?? 0)
+            let sourceText = sourceCount == 1 ? "1 source" : "\(sourceCount) sources"
             let pendingText = pending == 1 ? "1 pending" : "\(pending) pending"
             let overview = NSMenuItem(title: "\(sourceText), \(pendingText)", action: nil, keyEquivalent: "")
             overview.isEnabled = false

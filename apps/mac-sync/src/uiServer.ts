@@ -540,11 +540,14 @@ async function immediateLocalFolderEntries(share: ShareRecord, folder = "", maxE
   return nodes.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "folder" ? -1 : 1));
 }
 
-function remoteSourcePrefix(filePath: string): { label: string; prefix: string; origin: string } | undefined {
+function remoteSourcePrefix(space: string, filePath: string): { label: string; prefix: string; origin: string } | undefined {
   const parts = filePath.split("/").filter(Boolean);
   if (!parts.length) return undefined;
   if (parts[0] === "Mac Mini" && parts[1]) {
     return { label: parts[1], prefix: `${parts[0]}/${parts[1]}`, origin: "Mac Mini" };
+  }
+  if (space === "MacBook Shared" && parts[0] !== "Desktop Drops") {
+    return { label: parts[0], prefix: parts[0], origin: "MacBook" };
   }
   return { label: parts[0], prefix: parts[0], origin: "Vault" };
 }
@@ -556,7 +559,7 @@ function remoteSourcesForSpace(space: string, files: VaultFileRecord[]) {
   >();
 
   for (const file of files) {
-    const source = remoteSourcePrefix(file.path);
+    const source = remoteSourcePrefix(space, file.path);
     if (!source) continue;
     const key = `${space}\0${source.prefix}`;
     const current =
@@ -3318,7 +3321,7 @@ function renderHtml(): string {
       const sourceCanReceive = (source) => {
         if (!source) return false;
         if (source.sourceKind === "local") return source.access === "readwrite" || source.access === "writeonly";
-        return source.access !== "readonly" && spacePermissions(source.space || "").includes("write");
+        return source.origin !== "Mac Mini" && spacePermissions(source.space || "").includes("write");
       };
       const sourceCanEdit = (source) => {
         if (!source) return false;
@@ -3389,7 +3392,7 @@ function renderHtml(): string {
             ...source,
             sourceKind: "remote",
             sourceId: source.id,
-            deviceKind: source.origin === "Mac Mini" ? "mac-mini" : "vault",
+            deviceKind: source.origin === "Mac Mini" ? "mac-mini" : source.origin === "MacBook" ? "macbook" : "vault",
             deviceLabel: source.origin || "Vault"
           }))
         ];
@@ -3548,6 +3551,10 @@ function renderHtml(): string {
         }
         const skipBrowser = Boolean(options.silent && previousBrowserKey && previousBrowserKey === browserStateKey());
         render({ skipBrowser });
+      }
+
+      async function refreshVisibleSources(options = {}) {
+        await refresh({ refreshRemote: true, full: true, ...options });
       }
 
       window.__agentVaultSetPaused = (paused) => {
@@ -3756,12 +3763,15 @@ function renderHtml(): string {
         $("folderItems").className = "folder-items " + state.viewMode + (state.showDetails ? " show-details" : "");
         if (!source) {
           const sources = visibleSources();
+          const emptyMessage = state.summary?.remoteIndexing
+            ? "Lade Mac-Mini-Dateien..."
+            : "Keine geteilten Ordner für diesen Filter.";
           $("folderTitle").textContent = "Geteilte Ordner";
           $("folderMeta").textContent = sourcePathLabel(null);
           $("folderCrumbs").innerHTML = renderCrumbs(null, "");
           $("folderItems").innerHTML = sources.length
             ? sources.map((item) => renderSourceItem(item)).join("")
-            : '<div class="folder-empty">Keine geteilten Ordner für diesen Filter.</div>';
+            : '<div class="folder-empty">' + emptyMessage + '</div>';
           $("folderUp").disabled = true;
           $("folderNew").disabled = true;
           return;
@@ -3986,14 +3996,22 @@ function renderHtml(): string {
       }
 
       async function addPath(path) {
-        await api("/api/shares", {
+        const result = await api("/api/shares", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ path })
         });
         clearFolderListings();
+        await refreshVisibleSources();
+        if (result.share?.id) {
+          const sourceId = "local:" + result.share.id;
+          state.selectedSourceId = sourceId;
+          state.deviceFilter = "all";
+          const source = selectedSource();
+          if (source) setCurrentFolder(source, "");
+          renderFolderBrowser();
+        }
         toast("Shared folder added");
-        await refresh({ refreshRemote: true });
       }
       function currentUploadTarget() {
         const source = selectedSource();
@@ -4081,39 +4099,43 @@ function renderHtml(): string {
         event.stopPropagation();
         state.dragDepth = 0;
         document.body.classList.remove("dragging");
-        if (!state.summary) await refresh();
-        const localPaths = droppedLocalPaths(event);
-        if (localPaths.length) {
-          toast("Adding dropped paths");
-          const target = currentUploadTarget();
-          const result = await api("/api/ingest-paths", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ paths: localPaths, target })
-          });
-          clearFolderListings();
-          await refreshAfterDrop(result.target || target);
-          toast("Drop complete");
-          return;
-        }
-        const items = [...(event.dataTransfer?.items || [])];
-        let files = [];
-        for (const item of items) {
-          const entry = item.webkitGetAsEntry?.();
-          if (entry) files.push(...await walkEntry(entry));
-          else {
-            const file = item.getAsFile?.();
-            if (file) files.push({ file, path: file.name });
+        try {
+          if (!state.summary) await refreshVisibleSources();
+          const localPaths = droppedLocalPaths(event);
+          if (localPaths.length) {
+            toast("Adding dropped paths");
+            const target = currentUploadTarget();
+            const result = await api("/api/ingest-paths", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ paths: localPaths, target })
+            });
+            clearFolderListings();
+            await refreshAfterDrop(result.target || target);
+            toast("Drop complete");
+            return;
           }
+          const items = [...(event.dataTransfer?.items || [])];
+          let files = [];
+          for (const item of items) {
+            const entry = item.webkitGetAsEntry?.();
+            if (entry) files.push(...await walkEntry(entry));
+            else {
+              const file = item.getAsFile?.();
+              if (file) files.push({ file, path: file.name });
+            }
+          }
+          if (!files.length) return;
+          toast("Uploading " + files.length + " files");
+          for (const item of files) {
+            await uploadFile(item.file, item.path);
+          }
+          clearFolderListings();
+          await refreshAfterDrop(currentUploadTarget());
+          toast("Drop upload complete");
+        } catch (error) {
+          toast(error.message || "Drop failed");
         }
-        if (!files.length) return;
-        toast("Uploading " + files.length + " files");
-        for (const item of files) {
-          await uploadFile(item.file, item.path);
-        }
-        clearFolderListings();
-        await refreshAfterDrop(currentUploadTarget());
-        toast("Drop upload complete");
       }
 
       $("syncAll").addEventListener("click", async () => {
@@ -4146,13 +4168,17 @@ function renderHtml(): string {
         render();
         toast(result.preferences.autoSyncEnabled ? "Auto-sync on" : "Manual sync only");
       });
-      $("refresh").addEventListener("click", () => refresh({ refreshRemote: true }));
+      $("refresh").addEventListener("click", () => refreshVisibleSources());
       $("pathForm").addEventListener("submit", async (event) => {
         event.preventDefault();
         const value = $("pathInput").value.trim();
         if (value) {
-          await addPath(value);
-          $("pathInput").value = "";
+          try {
+            await addPath(value);
+            $("pathInput").value = "";
+          } catch (error) {
+            toast(error.message || "Folder could not be added");
+          }
         }
       });
       $("chooseFolder").addEventListener("click", async () => {
@@ -4161,8 +4187,12 @@ function renderHtml(): string {
           window.webkit.messageHandlers.agentVault.postMessage({ action: "chooseFolder" });
           return;
         }
-        const choice = await api("/api/choose-folder");
-        if (choice.path) await addPath(choice.path);
+        try {
+          const choice = await api("/api/choose-folder");
+          if (choice.path) await addPath(choice.path);
+        } catch (error) {
+          toast(error.message || "Folder could not be added");
+        }
       });
       document.querySelectorAll("[data-view]").forEach((button) => {
         button.addEventListener("click", () => setView(button.dataset.view));
@@ -4529,7 +4559,7 @@ function renderHtml(): string {
         state.schema.dragging = false;
       });
 
-      refresh({ refreshRemote: true }).catch((error) => {
+      refreshVisibleSources().catch((error) => {
         renderOffline(error.message);
         toast(error.message);
       });
